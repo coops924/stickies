@@ -120,8 +120,12 @@ cd src-tauri && cargo test
 ## Project layout
 
 ```
-src/                      React UI (note windows + settings window)
+src/                      Vue 3 UI
+  NoteWindow.vue          a sticky note: editor, rendered view, / and @ menus
+  SendMenu.vue            send/handoff destinations (add new ones here)
+  settings/               settings window tabs
   commands.ts             slash command and @ mention definitions
+  markdown.ts             rendering (markdown-it + DOMPurify) and Markdown helpers
 src-tauri/src/
   store.rs                Markdown note storage shared by app, CLI and MCP
   mcp.rs                  MCP server (rmcp, stdio)
