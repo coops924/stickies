@@ -48,7 +48,7 @@ I made Stickies because I wanted my notes and my coding agents in the same place
 
 Ideas or bugs? [github.com/coops924/stickies](https://github.com/coops924/stickies)
 
-— coops924";
+— Cooper";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct Frame {
