@@ -332,7 +332,7 @@ function CommandsTab() {
       <div className="panel">
         <h2>Shortcuts</h2>
         <p>
-          <kbd>Ctrl/⌘ N</kbd> new note · <kbd>Ctrl/⌘ W</kbd> hide note · <kbd>Shift Enter</kbd> newline without running a command
+          <kbd>Ctrl/⌘ N</kbd> new note · <kbd>Ctrl/⌘ W</kbd> hide note · <kbd>Ctrl/⌘ Shift C</kbd> copy note as a prompt · <kbd>Shift Enter</kbd> newline without running a command
         </p>
       </div>
     </section>

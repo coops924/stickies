@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Markdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, COLORS, errorText, PROVIDER_LABELS, type Note } from "./api";
 import {
   AGENT_MENTIONS,
@@ -10,6 +13,9 @@ import {
   SLASH_COMMANDS,
   type CommandContext,
 } from "./commands";
+import { Icon } from "./Icons";
+import { asPrompt, tidyMarkdown, toggleTask } from "./markdown";
+import SendMenu from "./SendMenu";
 
 interface MenuItem {
   key: string;
@@ -38,19 +44,57 @@ function lineBounds(text: string, pos: number) {
   return { start, end: endIdx === -1 ? text.length : endIdx };
 }
 
+// Rendered blocks carry their source line, so a click can put the caret on the
+// matching line and a checkbox click can flip the right `- [ ]`.
+type BlockTag = "p" | "li" | "h1" | "h2" | "h3" | "h4" | "blockquote" | "pre" | "table";
+const withLine = (Tag: BlockTag) =>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function Block({ node, ...props }: any) {
+    return <Tag data-line={node?.position?.start?.line} {...props} />;
+  };
+
+const MARKDOWN_COMPONENTS: Components = {
+  p: withLine("p"),
+  li: withLine("li"),
+  h1: withLine("h1"),
+  h2: withLine("h2"),
+  h3: withLine("h3"),
+  h4: withLine("h4"),
+  blockquote: withLine("blockquote"),
+  pre: withLine("pre"),
+  table: withLine("table"),
+  input: ({ node: _node, ...props }) => <input {...props} disabled={false} readOnly />,
+  a: ({ node: _node, href, children }) => (
+    <a
+      href={href}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (href) void openUrl(href);
+      }}
+    >
+      {children}
+    </a>
+  ),
+};
+
 export default function NoteWindow({ id }: { id: string }) {
   const [note, setNote] = useState<Note | null>(null);
   const [body, setBodyState] = useState("");
+  const [editing, setEditing] = useState(false);
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [menuIndex, setMenuIndex] = useState(0);
   const [otherNotes, setOtherNotes] = useState<Note[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [status, setStatus] = useState<{ text: string; error?: boolean } | null>(null);
   const [showColors, setShowColors] = useState(false);
+  const [showSend, setShowSend] = useState(false);
 
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const menuRef = useRef<HTMLUListElement>(null);
   const lastSaved = useRef("");
   const bodyRef = useRef("");
+  const loaded = useRef(false);
   const saveTimer = useRef<number | undefined>(undefined);
   const undoStack = useRef<string[]>([]);
 
@@ -84,6 +128,18 @@ export default function NoteWindow({ id }: { id: string }) {
     [flush],
   );
 
+  /** Switch to the editor, with the caret at the end of `line` (1-based) or of the note. */
+  const beginEditing = useCallback((line?: number) => {
+    setEditing(true);
+    requestAnimationFrame(() => {
+      const el = textarea.current;
+      if (!el) return;
+      el.focus();
+      const pos = line ? el.value.split("\n").slice(0, line).join("\n").length : el.value.length;
+      el.setSelectionRange(pos, pos);
+    });
+  }, []);
+
   // Initial load, and live updates when the file changes elsewhere
   // (Claude Code, Codex, the CLI, another editor).
   useEffect(() => {
@@ -99,11 +155,16 @@ export default function NoteWindow({ id }: { id: string }) {
           bodyRef.current = n.body;
           lastSaved.current = n.body;
         }
+        if (!loaded.current) {
+          loaded.current = true;
+          // A brand-new note opens ready to type; others open rendered.
+          if (!n.body.trim()) beginEditing();
+        }
       } catch {
         /* note was deleted; the backend closes this window */
       }
     };
-    load().then(() => textarea.current?.focus());
+    load();
     const unlisten = listen("notes-changed", load);
     const onBlur = () => void flush();
     window.addEventListener("blur", onBlur);
@@ -112,7 +173,7 @@ export default function NoteWindow({ id }: { id: string }) {
       unlisten.then((f) => f());
       window.removeEventListener("blur", onBlur);
     };
-  }, [id, flush]);
+  }, [id, flush, beginEditing]);
 
   useEffect(() => {
     if (trigger?.kind === "@") api.listNotes().then((all) => setOtherNotes(all.filter((n) => n.id !== id)));
@@ -122,6 +183,12 @@ export default function NoteWindow({ id }: { id: string }) {
     undoStack.current.push(bodyRef.current);
     if (undoStack.current.length > 50) undoStack.current.shift();
   };
+
+  const copyAsPrompt = useCallback(async () => {
+    if (!note) return;
+    await writeText(asPrompt(note, bodyRef.current));
+    toast("Copied as a prompt — paste into Claude Code or Codex");
+  }, [note, toast]);
 
   const runAi = useCallback(
     async (instruction: string, opts: { mode: "insert" | "replace"; provider?: string }, insertAt?: number) => {
@@ -135,16 +202,20 @@ export default function NoteWindow({ id }: { id: string }) {
       setBusy(`${who} is thinking…`);
       try {
         const res = await api.ai({ provider: opts.provider, instruction, note: bodyRef.current, context });
+        const reply = tidyMarkdown(res.text);
         pushUndo();
         const current = bodyRef.current;
         if (opts.mode === "replace") {
-          updateBody(res.text);
+          updateBody(reply);
         } else {
           const at = insertAt ?? current.length;
           const before = current.slice(0, at).replace(/\n*$/, "");
           const after = current.slice(at).replace(/^\n*/, "");
-          updateBody(`${before}${before ? "\n" : ""}${res.text}\n${after}`);
+          updateBody(`${before}${before ? "\n\n" : ""}${reply}${after ? `\n\n${after}` : "\n"}`);
         }
+        // Show the reply rendered.
+        setTrigger(null);
+        setEditing(false);
         toast(`${PROVIDER_LABELS[res.provider] ?? res.provider} ✓ — /undo to revert`);
       } catch (e) {
         toast(errorText(e), true);
@@ -197,10 +268,41 @@ export default function NoteWindow({ id }: { id: string }) {
         await api.closeNote(id);
       },
       openSettings: () => api.openSettings(),
+      openSend: () => {
+        setShowColors(false);
+        setShowSend(true);
+      },
       toast: (m) => toast(m),
     }),
     [note, id, flush, runAi, toast, updateBody],
   );
+
+  // Window-level shortcuts work in both the rendered view and the editor.
+  const onWindowKey = useRef<(e: KeyboardEvent) => void>(() => {});
+  onWindowKey.current = (e) => {
+    const k = e.key.toLowerCase();
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && k === "c") {
+      e.preventDefault();
+      void copyAsPrompt();
+    } else if (!IS_MAC && e.ctrlKey && !e.shiftKey && k === "n") {
+      e.preventDefault();
+      void api.createNote("", note?.color);
+    } else if (!IS_MAC && e.ctrlKey && !e.shiftKey && k === "w") {
+      e.preventDefault();
+      void makeContext(0).closeNote();
+    } else if (k === "escape") {
+      setShowColors(false);
+      setShowSend(false);
+    } else if (k === "enter" && !editing && !showSend && document.activeElement === document.body) {
+      e.preventDefault();
+      beginEditing();
+    }
+  };
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => onWindowKey.current(e);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // ---- trigger detection for the / and @ menus
 
@@ -248,6 +350,12 @@ export default function NoteWindow({ id }: { id: string }) {
 
   useEffect(() => setMenuIndex(0), [trigger?.kind, trigger?.query]);
 
+  // Keep the highlighted command visible while arrowing through a long menu.
+  useEffect(() => {
+    const item = menuRef.current?.children[menuIndex] as HTMLElement | undefined;
+    item?.scrollIntoView({ block: "nearest" });
+  }, [menuIndex, menuItems]);
+
   const executeLine = (text: string, caret: number): boolean => {
     const { start, end } = lineBounds(text, caret);
     const line = text.slice(start, end);
@@ -292,17 +400,6 @@ export default function NoteWindow({ id }: { id: string }) {
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    const mod = !IS_MAC && e.ctrlKey;
-    if (mod && e.key.toLowerCase() === "n") {
-      e.preventDefault();
-      void api.createNote("", note?.color);
-      return;
-    }
-    if (mod && e.key.toLowerCase() === "w") {
-      e.preventDefault();
-      void makeContext(0).closeNote();
-      return;
-    }
     if (trigger && menuItems.length) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -317,8 +414,8 @@ export default function NoteWindow({ id }: { id: string }) {
       }
     }
     if (e.key === "Escape") {
-      setTrigger(null);
-      setShowColors(false);
+      if (trigger) setTrigger(null);
+      else e.currentTarget.blur();
       return;
     }
     if (e.key === "Enter" && !e.shiftKey && !busy) {
@@ -326,67 +423,119 @@ export default function NoteWindow({ id }: { id: string }) {
     }
   };
 
+  const onViewClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    const line = Number(target.closest<HTMLElement>("[data-line]")?.dataset.line) || undefined;
+    if (target instanceof HTMLInputElement && target.type === "checkbox") {
+      if (line) {
+        pushUndo();
+        updateBody(toggleTask(bodyRef.current, line));
+      }
+      return;
+    }
+    if (target.closest("a")) return;
+    // Let people select rendered text to copy it without jumping into edit mode.
+    if (window.getSelection()?.toString()) return;
+    beginEditing(line);
+  };
+
   if (!note) return <div className="note loading" />;
 
   return (
     <div className={`note color-${note.color}`}>
       <header className="note-bar" data-tauri-drag-region>
-        <button className="icon" title="Color" onClick={() => setShowColors((s) => !s)}>
-          ●
+        <button
+          className={`icon ${showColors ? "active" : ""}`}
+          title="Change color"
+          onClick={() => {
+            setShowSend(false);
+            setShowColors((s) => !s);
+          }}
+        >
+          <Icon name="palette" />
         </button>
         <button
           className={`icon ${note.pinned ? "active" : ""}`}
-          title={note.pinned ? "Unpin (stop keeping on top)" : "Pin on top"}
+          title={note.pinned ? "Unpin (stop keeping on top)" : "Pin on top of other windows"}
           onClick={() => void makeContext(0).save({ pinned: !note.pinned })}
         >
-          📌
+          <Icon name="pin" filled={note.pinned} />
         </button>
-        <div className="note-title" data-tauri-drag-region>
-          {note.title}
-        </div>
-        <button className="icon" title="New note (Ctrl+N)" onClick={() => void api.createNote("", note.color)}>
-          ＋
+        <div className="drag-space" data-tauri-drag-region />
+        <button
+          className={`icon ${showSend ? "active" : ""}`}
+          title={`Send to Claude Code, Codex or an app (copy as prompt: ${IS_MAC ? "⌘" : "Ctrl+"}Shift+C)`}
+          onClick={() => {
+            setShowColors(false);
+            setShowSend((s) => !s);
+          }}
+        >
+          <Icon name="send" />
+        </button>
+        <button className="icon" title={`New note (${IS_MAC ? "⌘N" : "Ctrl+N"})`} onClick={() => void api.createNote("", note.color)}>
+          <Icon name="plus" />
         </button>
         <button className="icon" title="Settings" onClick={() => void api.openSettings()}>
-          ⚙
+          <Icon name="settings" />
         </button>
-        <button className="icon" title="Hide note (Ctrl+W)" onClick={() => void makeContext(0).closeNote()}>
-          ✕
+        <button className="icon" title={`Hide note (${IS_MAC ? "⌘W" : "Ctrl+W"})`} onClick={() => void makeContext(0).closeNote()}>
+          <Icon name="close" />
         </button>
       </header>
 
       {showColors && (
-        <div className="swatches">
+        <div className="swatches" role="radiogroup" aria-label="Note color">
           {COLORS.map((c) => (
             <button
               key={c}
-              className={`swatch color-${c}`}
-              title={c}
+              role="radio"
+              aria-checked={c === note.color}
+              className={`swatch color-${c} ${c === note.color ? "current" : ""}`}
+              title={c[0].toUpperCase() + c.slice(1)}
               onClick={() => {
                 setShowColors(false);
                 void makeContext(0).save({ color: c });
               }}
-            />
+            >
+              {c === note.color && <Icon name="check" size={12} />}
+            </button>
           ))}
         </div>
       )}
 
-      <textarea
-        ref={textarea}
-        className="note-body"
-        value={body}
-        spellCheck
-        placeholder={"Type / for commands\n@claude or @codex to ask AI\n@ to reference another note"}
-        onChange={(e) => {
-          updateBody(e.target.value);
-          detectTrigger(e.target.value, e.target.selectionStart);
-        }}
-        onKeyDown={onKeyDown}
-        onClick={(e) => detectTrigger(e.currentTarget.value, e.currentTarget.selectionStart)}
-      />
+      {editing ? (
+        <textarea
+          ref={textarea}
+          className="note-body"
+          value={body}
+          spellCheck
+          placeholder={"Type / for commands\n@claude or @codex to ask AI\n@ to reference another note"}
+          onChange={(e) => {
+            updateBody(e.target.value);
+            detectTrigger(e.target.value, e.target.selectionStart);
+          }}
+          onKeyDown={onKeyDown}
+          onClick={(e) => detectTrigger(e.currentTarget.value, e.currentTarget.selectionStart)}
+          onBlur={() => {
+            void flush();
+            setTrigger(null);
+            if (bodyRef.current.trim()) setEditing(false);
+          }}
+        />
+      ) : (
+        <div className="note-view" onClick={onViewClick}>
+          {body.trim() ? (
+            <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+              {body}
+            </Markdown>
+          ) : (
+            <p className="placeholder">Click to write…</p>
+          )}
+        </div>
+      )}
 
-      {trigger && menuItems.length > 0 && (
-        <ul className="menu" role="listbox">
+      {editing && trigger && menuItems.length > 0 && (
+        <ul className="menu" role="listbox" ref={menuRef}>
           {menuItems.map((item, i) => (
             <li
               key={item.key}
@@ -405,6 +554,8 @@ export default function NoteWindow({ id }: { id: string }) {
           ))}
         </ul>
       )}
+
+      {showSend && <SendMenu note={note} body={body} flush={flush} onClose={() => setShowSend(false)} toast={toast} />}
 
       {(busy || status) && (
         <footer className={`note-status ${status?.error && !busy ? "error" : ""}`} onClick={() => setStatus(null)}>

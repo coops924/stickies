@@ -21,6 +21,10 @@ pub struct Config {
     /// Explicit CLI paths for installs that aren't on the app's PATH.
     pub claude_path: String,
     pub codex_path: String,
+    /// Project folders recently used for "Open in Claude Code / Codex", newest first.
+    pub recent_folders: Vec<String>,
+    /// Set once the first-run intro notes have been shown.
+    pub welcomed: bool,
 }
 
 impl Default for Config {
@@ -34,6 +38,8 @@ impl Default for Config {
             openai_model: String::new(),
             claude_path: String::new(),
             codex_path: String::new(),
+            recent_folders: Vec::new(),
+            welcomed: false,
         }
     }
 }
@@ -49,5 +55,11 @@ impl Config {
     pub fn save(&self, root: &Path) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(self).expect("config serializes");
         fs::write(root.join("config.json"), json)
+    }
+
+    pub fn remember_folder(&mut self, folder: &str) {
+        self.recent_folders.retain(|f| f != folder);
+        self.recent_folders.insert(0, folder.to_string());
+        self.recent_folders.truncate(6);
     }
 }

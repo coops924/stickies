@@ -32,6 +32,8 @@ export interface Config {
   openai_model: string;
   claude_path: string;
   codex_path: string;
+  recent_folders: string[];
+  welcomed: boolean;
 }
 
 export interface CliStatus {
@@ -76,6 +78,8 @@ export const api = {
   openSettings: () => invoke<void>("open_settings"),
   showAllNotes: () => invoke<void>("show_all_notes"),
   notesDir: () => invoke<string>("notes_dir"),
+  openInAgent: (agent: Agent, id: string, folder: string) => invoke<void>("open_in_agent", { agent, id, folder }),
+  exportNote: (id: string, path: string) => invoke<void>("export_note", { id, path }),
   ai: (request: { provider?: string; instruction: string; note: string; context: { title: string; body: string }[] }) =>
     invoke<{ provider: string; text: string }>("ai_run", { request }),
   aiStatus: () => invoke<ProviderStatus>("ai_status"),

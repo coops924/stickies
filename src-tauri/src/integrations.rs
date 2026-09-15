@@ -1,9 +1,9 @@
 //! Connecting Stickies to Claude Code and Codex: registering the `stickies mcp`
-//! server with each CLI, installing the Stickies skill, and opening a terminal
-//! for the CLI's own sign-in flow.
+//! server with each CLI, installing the Stickies skill, opening a terminal for
+//! the CLI's own sign-in flow, and handing a note off to a new agent session.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -49,6 +49,10 @@ impl Agent {
             Agent::Codex => std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| dirs::home_dir().map(|h| h.join(".codex"))),
         };
         base.map(|b| b.join("skills").join(SERVER_NAME))
+    }
+
+    fn find(self, config: &Config) -> Result<PathBuf, String> {
+        find_cli(self.binary(), self.override_path(config)).ok_or_else(|| format!("`{}` is not installed", self.binary()))
     }
 }
 
@@ -118,8 +122,7 @@ pub fn status(agent: Agent) -> IntegrationStatus {
 }
 
 pub async fn connect(agent: Agent, config: &Config) -> Result<IntegrationStatus, String> {
-    let cli = find_cli(agent.binary(), agent.override_path(config))
-        .ok_or_else(|| format!("`{}` is not installed", agent.binary()))?;
+    let cli = agent.find(config)?;
 
     // Re-adding replaces a stale path (e.g. after the app moved), so remove first.
     let mut remove = command(&cli);
@@ -145,7 +148,7 @@ pub async fn connect(agent: Agent, config: &Config) -> Result<IntegrationStatus,
 }
 
 pub async fn disconnect(agent: Agent, config: &Config) -> Result<IntegrationStatus, String> {
-    if let Some(cli) = find_cli(agent.binary(), agent.override_path(config)) {
+    if let Ok(cli) = agent.find(config) {
         let mut remove = command(&cli);
         remove.args(["mcp", "remove", SERVER_NAME]);
         if agent == Agent::Claude {
@@ -161,23 +164,47 @@ pub async fn disconnect(agent: Agent, config: &Config) -> Result<IntegrationStat
 
 /// Sign-in happens in the CLI's own interactive flow, so open a terminal for it.
 pub fn open_login(agent: Agent, config: &Config) -> Result<(), String> {
-    let cli = find_cli(agent.binary(), agent.override_path(config))
-        .ok_or_else(|| format!("`{}` is not installed", agent.binary()))?;
-    let cli = cli.display().to_string();
+    let cli = agent.find(config)?.display().to_string();
     let args: &[&str] = match agent {
         Agent::Claude => &["auth", "login"],
         Agent::Codex => &["login"],
     };
-    open_terminal(&cli, args)
+    open_terminal(&cli, args, None)
+}
+
+/// Starts an interactive Claude Code / Codex session in `folder`, primed to read
+/// the note. The prompt points at the note file rather than embedding its text,
+/// so multi-line notes survive every platform's terminal and shell quoting.
+pub fn open_session(agent: Agent, config: &Config, folder: &Path, title: &str, note_path: &Path) -> Result<(), String> {
+    let cli = agent.find(config)?.display().to_string();
+    if !folder.is_dir() {
+        return Err(format!("{} is not a folder", folder.display()));
+    }
+    let title: String = title.chars().filter(|c| !"\"%`".contains(*c)).collect();
+    let prompt = format!(
+        "Read my sticky note `{}` (titled: {}) and use it as the brief for this session.",
+        note_path.display(),
+        title
+    );
+    let mut args = vec![prompt];
+    if agent == Agent::Claude {
+        // Let Claude Code read the note without a permission prompt.
+        if let Some(dir) = note_path.parent() {
+            args.push("--add-dir".into());
+            args.push(dir.display().to_string());
+        }
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    open_terminal(&cli, &args, Some(folder))
 }
 
 #[cfg(target_os = "macos")]
-fn open_terminal(program: &str, args: &[&str]) -> Result<(), String> {
-    let shell_line = std::iter::once(program)
-        .chain(args.iter().copied())
-        .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
-        .collect::<Vec<_>>()
-        .join(" ");
+fn open_terminal(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
+    let q = |a: &str| format!("'{}'", a.replace('\'', "'\\''"));
+    let mut shell_line = std::iter::once(program).chain(args.iter().copied()).map(q).collect::<Vec<_>>().join(" ");
+    if let Some(dir) = cwd {
+        shell_line = format!("cd {} && {}", q(&dir.display().to_string()), shell_line);
+    }
     let script = format!(
         "tell application \"Terminal\"\n  activate\n  do script \"{}\"\nend tell",
         shell_line.replace('\\', "\\\\").replace('"', "\\\"")
@@ -190,17 +217,30 @@ fn open_terminal(program: &str, args: &[&str]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn open_terminal(program: &str, args: &[&str]) -> Result<(), String> {
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "Stickies sign-in", "cmd", "/K", program])
-        .args(args)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("couldn't open a terminal: {e}"))
+fn open_terminal(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("cmd");
+    // The window title must contain a space so it's quoted and `start` doesn't
+    // mistake it for the program to run.
+    cmd.args(["/C", "start", "Stickies terminal"]);
+    if let Some(dir) = cwd {
+        cmd.arg("/D").arg(dir);
+    }
+    cmd.args(["cmd", "/K", program]).args(args);
+    cmd.spawn().map(|_| ()).map_err(|e| format!("couldn't open a terminal: {e}"))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn open_terminal(program: &str, args: &[&str]) -> Result<(), String> {
+fn open_terminal(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
+    // Terminals disagree on how to set the working directory, so wrap the
+    // command in `sh -c 'cd "$1" && shift && exec "$@"'`.
+    let mut full: Vec<String> = Vec::new();
+    if let Some(dir) = cwd {
+        full.extend(["sh", "-c", "cd \"$1\" && shift && exec \"$@\"", "stickies"].map(String::from));
+        full.push(dir.display().to_string());
+    }
+    full.push(program.to_string());
+    full.extend(args.iter().map(|a| a.to_string()));
+
     // (terminal, flag that precedes the command to run)
     let mut terminals: Vec<(String, &str)> = Vec::new();
     if let Ok(t) = std::env::var("TERMINAL") {
@@ -224,7 +264,7 @@ fn open_terminal(program: &str, args: &[&str]) -> Result<(), String> {
     for (term, flag) in terminals {
         let Ok(path) = which::which(&term) else { continue };
         let mut cmd = std::process::Command::new(path);
-        cmd.args(flag.split_whitespace()).arg(program).args(args);
+        cmd.args(flag.split_whitespace()).args(&full);
         if cmd.spawn().is_ok() {
             return Ok(());
         }

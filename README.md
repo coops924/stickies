@@ -6,6 +6,8 @@ AI-powered desktop sticky notes for macOS, Windows and Linux that work hand in h
 - Just sticky notes, like macOS Stickies: no main window. Frameless, colorful, pin-on-top notes that remember where you left them.
 - Settings open in their own window only when you ask (tray icon → Settings…, ⚙ on a note, `/settings`, or ⌘, on macOS).
 - `/` commands and `@` mentions right in the note: `/summarize`, `/tasks`, `/rewrite`, `@claude …`, `@codex …`, `@[Another note]`.
+- Notes render Markdown (clickable checklists, links) and switch to plain text while you edit. AI replies are kept short and tidied.
+- **Send** any note onward in a click: copy as a prompt, start a Claude Code or Codex session in a project folder, open it in the Claude app or ChatGPT, email it, or save a `.md`.
 - AI runs on **your own Claude Code or Codex sign-in** — or an API key if you prefer.
 - Pull notes into, and push notes out of, Claude Code and Codex through a built-in **MCP server** and skill.
 - Notes are plain Markdown files you own. There's also a `stickies` CLI.
@@ -38,6 +40,20 @@ Then, in a new agent session:
 
 New or edited notes appear on your desktop immediately if Stickies is running.
 
+## Sending a note somewhere
+
+The send button on each note (or `/send`) offers:
+
+| Action | What happens |
+| --- | --- |
+| Copy as prompt · Markdown · plain text · note reference | Clipboard, ready to paste (Ctrl/⌘+Shift+C copies as a prompt from any note) |
+| Claude Code / Codex (terminal) | Opens a terminal in a project folder you pick and starts an interactive session that reads the note |
+| Claude Code (Claude app) | `claude://code/new?q=…&folder=…`: Claude Desktop opens a Code session with the note prefilled |
+| Claude (Claude app) · ChatGPT | New chat with the note prefilled; you review and send |
+| Email · Save as Markdown file | `mailto:` with plain text, or a `.md` file wherever you choose |
+
+Recently used project folders are remembered.
+
 ### MCP tools
 
 `list_notes`, `read_note`, `search_notes`, `create_note`, `append_to_note`, `update_note`, `delete_note` (moves to trash),
@@ -57,6 +73,7 @@ Type `/` at the start of a line or `@` anywhere. Commands that take text run whe
 | `/todo` | Turn lines into a checklist (no AI) |
 | `/color ‹name›` · `/pin` · `/unpin` · `/tag ‹a, b›` | Note properties |
 | `/new [text]` · `/close` · `/delete` | Manage notes |
+| `/send` · `/format` | Open the send menu · tidy the note's Markdown |
 | `/copy` · `/prompt` · `/handoff` | Copy the note, the note as a prompt, or a reference for Claude Code / Codex |
 | `@claude ‹prompt›` · `@codex ‹prompt›` · `@ai ‹prompt›` | Ask about that line; the answer goes underneath |
 | `@[Note title]` | Include another note as context for AI commands |
@@ -117,7 +134,6 @@ integrations/claude-code/ Claude Code plugin with the Stickies skill
 
 ## Roadmap ideas
 
-- Rendered Markdown view with clickable checkboxes
 - Global hotkey for a new note
 - Streaming AI output into the note
 - Agent tasks from a note (run `claude`/`codex` in a chosen project folder)

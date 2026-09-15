@@ -7,6 +7,7 @@ pub mod secrets;
 pub mod store;
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -22,10 +23,32 @@ use store::{Note, NotePatch, Store};
 const SETTINGS: &str = "settings";
 const NOTE_PREFIX: &str = "note-";
 
-const WELCOME: &str = "Welcome to Stickies
-Type / at the start of a line for commands (/color, /summarize, /todo…)
-@claude or @codex + Enter asks AI about that line
-/settings to sign in and connect Claude Code or Codex";
+const INTRO_WELCOME: &str = "# Welcome to Stickies
+Your notes live on the desktop and save as you type.
+
+- Type **/** at the start of a line for commands
+- **@claude** or **@codex** then Enter asks AI about a line
+- The **send** button hands a note to Claude Code, Codex, Claude or ChatGPT
+- **Ctrl/⌘+Shift+C** copies a note as a prompt
+- Close a note to hide it; bring it back from the tray icon
+
+- [ ] Click this box to check it off";
+
+const INTRO_CONNECT: &str = "# Connect AI (optional)
+Stickies works fine without AI. To turn it on:
+
+1. Install **Claude Code** or **Codex**
+2. Type **/settings** in any note
+3. Click **Sign in**, then **Connect** so your agent can read and write your notes
+
+Prefer an API key? Add one under **Settings → AI**.";
+
+const INTRO_THANKS: &str = "# Thanks for installing!
+I made Stickies because I wanted my notes and my coding agents in the same place. I hope it saves you a pile of copy-pasting.
+
+Ideas or bugs? [github.com/coops924/stickies](https://github.com/coops924/stickies)
+
+— coops924";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct Frame {
@@ -117,14 +140,32 @@ fn open_settings_window(app: &AppHandle) -> Res<()> {
     Ok(())
 }
 
-/// Brings every note to the screen. With no notes at all, creates a welcome
-/// note, so opening Stickies always shows something.
+/// Brings every note to the screen. With no notes at all, starts a blank one,
+/// so opening Stickies always shows something.
 fn show_all(app: &AppHandle) -> Res<()> {
     let notes = state(app).store.list().map_err(|e| e.to_string())?;
     if notes.is_empty() {
-        new_note(app, WELCOME, None)?;
+        new_note(app, "", None)?;
     }
     for note in &notes {
+        open_note_window(app, note)?;
+    }
+    Ok(())
+}
+
+/// First launch: lay the intro notes out side by side, welcome note in front.
+fn create_intro_notes(app: &AppHandle) -> Res<()> {
+    let st = state(app);
+    let mut created = Vec::new();
+    for (i, (color, body)) in [("yellow", INTRO_WELCOME), ("blue", INTRO_CONNECT), ("pink", INTRO_THANKS)].into_iter().enumerate() {
+        let note = st.store.create(body, Some(color), vec![]).map_err(|e| e.to_string())?;
+        st.layout.lock().unwrap().frames.insert(
+            note.id.clone(),
+            Frame { x: 100.0 + i as f64 * 310.0, y: 120.0 + i as f64 * 28.0, w: 290.0, h: 330.0, open: true },
+        );
+        created.push(note);
+    }
+    for note in created.iter().rev() {
         open_note_window(app, note)?;
     }
     Ok(())
@@ -250,6 +291,27 @@ async fn show_all_notes(app: AppHandle) -> Res<()> {
 #[tauri::command]
 fn notes_dir(app: AppHandle) -> String {
     state(&app).store.notes_dir().display().to_string()
+}
+
+/// Opens a terminal running Claude Code or Codex in `folder`, pointed at the note.
+#[tauri::command]
+fn open_in_agent(app: AppHandle, agent: String, id: String, folder: String) -> Res<()> {
+    let st = state(&app);
+    let note = st.store.resolve(&id).map_err(|e| e.to_string())?;
+    let note_path = st.store.notes_dir().join(format!("{}.md", note.id));
+    let config = {
+        let mut config = st.config.lock().unwrap();
+        config.remember_folder(&folder);
+        let _ = config.save(st.store.root());
+        config.clone()
+    };
+    integrations::open_session(Agent::parse(&agent)?, &config, Path::new(&folder), &note.title, &note_path)
+}
+
+#[tauri::command]
+fn export_note(app: AppHandle, id: String, path: String) -> Res<()> {
+    let note = state(&app).store.resolve(&id).map_err(|e| e.to_string())?;
+    std::fs::write(&path, &note.body).map_err(|e| format!("couldn't save {path}: {e}"))
 }
 
 #[tauri::command]
@@ -454,6 +516,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState { store, config: Mutex::new(config), layout: Mutex::new(layout), layout_dirty: Mutex::new(false) })
         .invoke_handler(tauri::generate_handler![
             list_notes,
@@ -466,6 +529,8 @@ pub fn run() {
             open_settings,
             show_all_notes,
             notes_dir,
+            open_in_agent,
+            export_note,
             ai_run,
             ai_status,
             get_config,
@@ -498,19 +563,31 @@ pub fn run() {
                 eprintln!("stickies: tray unavailable: {e}");
             }
 
-            // Reopen every note that wasn't explicitly hidden. If that leaves
-            // nothing on screen, show everything (or a welcome note).
             let notes = state(&handle).store.list().unwrap_or_default();
-            let visible: Vec<Note> = {
+            let first_run = !state(&handle).config.lock().unwrap().welcomed;
+            if first_run {
                 let st = state(&handle);
-                let layout = st.layout.lock().unwrap();
-                notes.into_iter().filter(|n| layout.frames.get(&n.id).map(|f| f.open).unwrap_or(true)).collect()
-            };
-            if visible.is_empty() {
-                show_all(&handle)?;
+                let mut config = st.config.lock().unwrap();
+                config.welcomed = true;
+                let _ = config.save(st.store.root());
             }
-            for note in &visible {
-                open_note_window(&handle, note)?;
+
+            if first_run && notes.is_empty() {
+                create_intro_notes(&handle)?;
+            } else {
+                // Reopen every note that wasn't explicitly hidden. If that leaves
+                // nothing on screen, show everything (or a blank note).
+                let visible: Vec<Note> = {
+                    let st = state(&handle);
+                    let layout = st.layout.lock().unwrap();
+                    notes.into_iter().filter(|n| layout.frames.get(&n.id).map(|f| f.open).unwrap_or(true)).collect()
+                };
+                if visible.is_empty() {
+                    show_all(&handle)?;
+                }
+                for note in &visible {
+                    open_note_window(&handle, note)?;
+                }
             }
 
             watch_notes(handle.clone());

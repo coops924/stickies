@@ -1,4 +1,5 @@
 import { COLORS, type Note } from "./api";
+import { asPrompt, tidyMarkdown } from "./markdown";
 
 /** What a command can do to the note it runs in. Implemented by NoteWindow. */
 export interface CommandContext {
@@ -17,6 +18,8 @@ export interface CommandContext {
   deleteNote: () => Promise<void>;
   closeNote: () => Promise<void>;
   openSettings: () => Promise<void>;
+  /** Show the send / handoff menu. */
+  openSend: () => void;
   toast: (message: string) => void;
 }
 
@@ -48,6 +51,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     argRequired: true,
     ai: true,
     run: (ctx, arg) => ctx.ai(arg, { mode: "insert" }),
+  },
+  {
+    name: "send",
+    description: "Send to Claude Code, Codex, Claude, ChatGPT, email…",
+    run: (ctx) => ctx.openSend(),
   },
   {
     name: "claude",
@@ -103,6 +111,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     run: (ctx) => ctx.ai("Expand this note with useful detail while keeping it sticky-note sized.", { mode: "replace" }),
   },
   { name: "todo", description: "Turn lines into a checklist", run: (ctx) => ctx.setBody(toChecklist(ctx.body)) },
+  { name: "format", description: "Tidy up the note's Markdown", run: (ctx) => ctx.setBody(tidyMarkdown(ctx.body)) },
   {
     name: "color",
     description: `Change color (${COLORS.join(", ")})`,
@@ -138,7 +147,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   {
     name: "prompt",
     description: "Copy the note wrapped as a prompt for any agent",
-    run: (ctx) => ctx.copy(`Here is my sticky note "${ctx.note.title}":\n\n<note>\n${ctx.body}\n</note>\n`, "Copied note as a prompt"),
+    run: (ctx) => ctx.copy(asPrompt(ctx.note, ctx.body), "Copied note as a prompt"),
   },
   { name: "undo", description: "Undo the last command", run: (ctx) => ctx.undo() },
   { name: "close", description: "Hide this note (it stays saved)", run: (ctx) => ctx.closeNote() },
