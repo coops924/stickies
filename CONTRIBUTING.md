@@ -27,6 +27,13 @@ Slash commands live in `src/commands.ts`. Add an entry to `SLASH_COMMANDS` with 
 optional `arg`, and a `run(ctx, arg)` function. AI commands call `ctx.ai(instruction, { mode })`. The Commands
 page in the app and the README table should be updated to match.
 
+## Editor notes
+
+The note editor is Milkdown (ProseMirror + remark), configured in `src/editor.ts`. Markdown is the
+source of truth: it is parsed when a note opens and re-serialized on every edit, so `remarkStringifyOptionsCtx`
+there pins the output style (`-` bullets and so on) to keep diffs small. The `/` and `@` menus are driven by a
+ProseMirror plugin in the same file, which reports the token under the cursor and forwards menu keys.
+
 ## Adding an MCP tool
 
 Tools are methods on `StickiesServer` in `src-tauri/src/mcp.rs` marked with `#[tool]`. Keep note logic in

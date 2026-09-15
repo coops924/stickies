@@ -2,6 +2,7 @@ import { createApp } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import NoteWindow from "./NoteWindow.vue";
 import Settings from "./Settings.vue";
+import "@milkdown/kit/prose/view/style/prosemirror.css";
 import "./styles.css";
 
 // One bundle serves every window; the window label says which UI to show.

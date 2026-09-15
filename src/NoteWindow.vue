@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, COLORS, errorText, PROVIDER_LABELS, type Color, type Note, type NotePatch } from "./api";
 import {
   AGENT_MENTIONS,
@@ -12,8 +11,10 @@ import {
   SLASH_COMMANDS,
   type CommandContext,
 } from "./commands";
-import { asPrompt, renderMarkdown, tidyMarkdown, toggleTask } from "./markdown";
+import type { EditorHooks, Trigger } from "./editor";
+import { asPrompt, tidyMarkdown } from "./markdown";
 import Icon from "./Icon.vue";
+import NoteEditor from "./NoteEditor.vue";
 import SendMenu from "./SendMenu.vue";
 
 const props = defineProps<{ id: string }>();
@@ -28,28 +29,15 @@ interface MenuItem {
   runNow: boolean;
 }
 
-interface Trigger {
-  kind: "/" | "@";
-  query: string;
-  /** Offset of the trigger character in the body. */
-  start: number;
-}
-
 const SAVE_DELAY = 400;
 // On macOS the menu bar handles Cmd+N and Cmd+W.
 const IS_MAC = navigator.userAgent.includes("Mac");
 const MOD = IS_MAC ? "⌘" : "Ctrl+";
-const PLACEHOLDER = "Type / for commands\n@claude or @codex to ask AI\n@ to reference another note";
-
-function lineBounds(text: string, pos: number) {
-  const start = text.lastIndexOf("\n", pos - 1) + 1;
-  const endIdx = text.indexOf("\n", pos);
-  return { start, end: endIdx === -1 ? text.length : endIdx };
-}
+const PLACEHOLDER = "Type / for commands, @claude to ask AI…";
 
 const note = ref<Note | null>(null);
 const body = ref("");
-const editing = ref(false);
+const ready = ref(false);
 const trigger = ref<Trigger | null>(null);
 const menuIndex = ref(0);
 const otherNotes = ref<Note[]>([]);
@@ -58,15 +46,12 @@ const status = ref<{ text: string; error?: boolean } | null>(null);
 const showColors = ref(false);
 const showSend = ref(false);
 
-const textarea = ref<HTMLTextAreaElement | null>(null);
+const editor = ref<InstanceType<typeof NoteEditor> | null>(null);
 const menuEl = ref<HTMLUListElement | null>(null);
 
 let lastSaved = "";
-let loaded = false;
 let saveTimer: number | undefined;
 const undoStack: string[] = [];
-
-const rendered = computed(() => renderMarkdown(body.value));
 
 // ---- saving and loading
 
@@ -91,21 +76,17 @@ async function flush() {
   }
 }
 
-function updateBody(next: string) {
-  body.value = next;
+/** The editor reported an edit: remember it, then save shortly after. */
+function onMarkdown(markdown: string) {
+  body.value = markdown;
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(flush, SAVE_DELAY);
 }
 
-/** Switch to the editor, with the caret at the end of `line` (1-based) or of the note. */
-async function beginEditing(line?: number) {
-  editing.value = true;
-  await nextTick();
-  const el = textarea.value;
-  if (!el) return;
-  el.focus();
-  const pos = line ? el.value.split("\n").slice(0, line).join("\n").length : el.value.length;
-  el.setSelectionRange(pos, pos);
+/** Change the note from outside the editor (AI, commands, undo, file changes). */
+function applyMarkdown(markdown: string) {
+  onMarkdown(markdown);
+  editor.value?.setMarkdown(markdown);
 }
 
 // Runs on open and whenever the notes folder changes (Claude Code, Codex, the
@@ -114,15 +95,17 @@ async function load() {
   try {
     const n = await api.getNote(props.id);
     note.value = n;
-    // Only take the file's body if the user has no unsaved typing.
-    if (body.value === lastSaved && n.body !== lastSaved) {
+    if (!ready.value) {
       body.value = n.body;
       lastSaved = n.body;
+      ready.value = true;
+      if (!n.body.trim()) setTimeout(() => editor.value?.focus(), 50);
+      return;
     }
-    if (!loaded) {
-      loaded = true;
-      // A brand-new note opens ready to type; others open rendered.
-      if (!n.body.trim()) void beginEditing();
+    // Only take the file's version if the user has no unsaved typing.
+    if (body.value === lastSaved && n.body !== lastSaved) {
+      lastSaved = n.body;
+      applyMarkdown(n.body);
     }
   } catch {
     /* note was deleted; the backend closes this window */
@@ -157,9 +140,18 @@ function pushUndo() {
   if (undoStack.length > 50) undoStack.shift();
 }
 
+/** Put AI output right after the line that asked for it, else at the end. */
+function insertAfterLine(markdown: string, anchor: string | undefined, text: string): string {
+  const lines = markdown.split("\n");
+  const at = anchor ? lines.findIndex((l) => l.trim() === anchor.trim()) : -1;
+  if (at === -1) return `${markdown.replace(/\n*$/, "")}\n\n${text}\n`;
+  lines.splice(at + 1, 0, "", text);
+  return lines.join("\n");
+}
+
 // ---- AI
 
-async function runAi(instruction: string, opts: { mode: "insert" | "replace"; provider?: string }, insertAt?: number) {
+async function runAi(instruction: string, opts: { mode: "insert" | "replace"; provider?: string }, anchor?: string) {
   const titles = noteReferences(body.value);
   const all = titles.length ? await api.listNotes() : [];
   const context = titles
@@ -172,18 +164,7 @@ async function runAi(instruction: string, opts: { mode: "insert" | "replace"; pr
     const res = await api.ai({ provider: opts.provider, instruction, note: body.value, context });
     const reply = tidyMarkdown(res.text);
     pushUndo();
-    if (opts.mode === "replace") {
-      updateBody(reply);
-    } else {
-      const current = body.value;
-      const at = insertAt ?? current.length;
-      const before = current.slice(0, at).replace(/\n*$/, "");
-      const after = current.slice(at).replace(/^\n*/, "");
-      updateBody(`${before}${before ? "\n\n" : ""}${reply}${after ? `\n\n${after}` : "\n"}`);
-    }
-    // Show the reply rendered.
-    trigger.value = null;
-    editing.value = false;
+    applyMarkdown(opts.mode === "replace" ? reply : insertAfterLine(body.value, anchor, reply));
     toast(`${PROVIDER_LABELS[res.provider] ?? res.provider} ✓ — /undo to revert`);
   } catch (e) {
     toast(errorText(e), true);
@@ -192,21 +173,20 @@ async function runAi(instruction: string, opts: { mode: "insert" | "replace"; pr
   }
 }
 
-function makeContext(insertAt: number): CommandContext {
+function makeContext(anchor?: string): CommandContext {
   return {
     note: note.value!,
     body: body.value,
     setBody: (b) => {
       pushUndo();
-      updateBody(b);
+      applyMarkdown(b);
     },
     insert: (text) => {
       pushUndo();
-      const cur = body.value;
-      updateBody(`${cur.slice(0, insertAt)}${text}\n${cur.slice(insertAt)}`);
+      applyMarkdown(insertAfterLine(body.value, anchor, text));
     },
     save,
-    ai: (instruction, opts) => runAi(instruction, opts, insertAt),
+    ai: (instruction, opts) => runAi(instruction, opts, anchor),
     copy: async (text, message) => {
       await writeText(text);
       toast(message);
@@ -214,7 +194,7 @@ function makeContext(insertAt: number): CommandContext {
     undo: () => {
       const prev = undoStack.pop();
       if (prev === undefined) toast("Nothing to undo");
-      else updateBody(prev);
+      else applyMarkdown(prev);
     },
     newNote,
     deleteNote: async () => {
@@ -232,18 +212,6 @@ function makeContext(insertAt: number): CommandContext {
 }
 
 // ---- the / and @ menus
-
-function detectTrigger(text: string, caret: number) {
-  const { start } = lineBounds(text, caret);
-  const beforeCaret = text.slice(start, caret);
-  const slash = beforeCaret.match(/^\s*\/([a-z]*)$/i);
-  if (slash) {
-    trigger.value = { kind: "/", query: slash[1].toLowerCase(), start: caret - slash[1].length - 1 };
-    return;
-  }
-  const at = beforeCaret.match(/(?:^|\s)@([^\s@]*)$/);
-  trigger.value = at ? { kind: "@", query: at[1].toLowerCase(), start: caret - at[1].length - 1 } : null;
-}
 
 const menuItems = computed<MenuItem[]>(() => {
   const t = trigger.value;
@@ -293,117 +261,63 @@ watch(
 
 // Keep the highlighted command visible while arrowing through a long menu.
 watch([menuIndex, menuItems], async () => {
-  await nextTick();
+  await new Promise(requestAnimationFrame);
   (menuEl.value?.children[menuIndex.value] as HTMLElement | undefined)?.scrollIntoView({ block: "nearest" });
 });
 
-function executeLine(text: string, caret: number): boolean {
-  const { start, end } = lineBounds(text, caret);
-  const line = text.slice(start, end);
+function chooseMenuItem(item: MenuItem) {
+  const t = trigger.value;
+  if (!t) return;
+  trigger.value = null;
+  editor.value?.completeTrigger(t, item.insert);
+  if (item.runNow) {
+    const line = editor.value?.currentLine() ?? "";
+    if (onEnterLine(line)) return;
+  }
+}
 
+/** Enter on a line: run a slash command or an @agent request, if it is one. */
+function onEnterLine(line: string): boolean {
   const slash = parseSlashLine(line);
   if (slash) {
-    // Remove the command line, then run it where it was typed.
-    const removeEnd = end < text.length ? end + 1 : end;
-    updateBody(text.slice(0, start) + text.slice(removeEnd));
-    void slash.command.run(makeContext(start), slash.arg);
+    editor.value?.clearLine();
+    void slash.command.run(makeContext(), slash.arg);
     return true;
   }
-
   const mention = parseMentionLine(line);
   if (mention) {
-    void runAi(mention.instruction, { mode: "insert", provider: mention.provider }, end);
+    void runAi(mention.instruction, { mode: "insert", provider: mention.provider }, line);
     return true;
   }
   return false;
 }
 
-async function chooseMenuItem(item: MenuItem) {
-  const el = textarea.value;
-  const t = trigger.value;
-  if (!el || !t) return;
-  const text = body.value;
-  const next = text.slice(0, t.start) + item.insert + text.slice(el.selectionStart);
-  const caret = t.start + item.insert.length;
-  trigger.value = null;
-  updateBody(next);
-  if (item.runNow) {
-    executeLine(next, caret);
-    return;
+function onMenuKey(key: "up" | "down" | "select" | "escape"): boolean {
+  if (!trigger.value || !menuItems.value.length) return false;
+  if (key === "escape") {
+    trigger.value = null;
+    return true;
   }
-  await nextTick();
-  el.focus();
-  el.setSelectionRange(caret, caret);
+  if (key === "select") {
+    chooseMenuItem(menuItems.value[menuIndex.value]);
+    return true;
+  }
+  const delta = key === "down" ? 1 : -1;
+  menuIndex.value = (menuIndex.value + delta + menuItems.value.length) % menuItems.value.length;
+  return true;
 }
 
-// ---- events
+const hooks: EditorHooks = {
+  onMarkdown,
+  onTrigger: (t) => {
+    trigger.value = t;
+  },
+  onEnterLine,
+  onMenuKey,
+};
 
-function onInput(e: Event) {
-  const el = e.target as HTMLTextAreaElement;
-  updateBody(el.value);
-  detectTrigger(el.value, el.selectionStart);
-}
+// ---- window chrome
 
-function onTextareaClick(e: MouseEvent) {
-  const el = e.target as HTMLTextAreaElement;
-  detectTrigger(el.value, el.selectionStart);
-}
-
-function onKeyDown(e: KeyboardEvent) {
-  const items = menuItems.value;
-  if (trigger.value && items.length) {
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      const delta = e.key === "ArrowDown" ? 1 : -1;
-      menuIndex.value = (menuIndex.value + delta + items.length) % items.length;
-      return;
-    }
-    if (e.key === "Enter" || e.key === "Tab") {
-      e.preventDefault();
-      void chooseMenuItem(items[menuIndex.value]);
-      return;
-    }
-  }
-  if (e.key === "Escape") {
-    if (trigger.value) trigger.value = null;
-    else (e.target as HTMLTextAreaElement).blur();
-    return;
-  }
-  if (e.key === "Enter" && !e.shiftKey && !busy.value) {
-    if (executeLine(body.value, (e.target as HTMLTextAreaElement).selectionStart)) e.preventDefault();
-  }
-}
-
-function onBlur() {
-  void flush();
-  trigger.value = null;
-  if (body.value.trim()) editing.value = false;
-}
-
-function onViewClick(e: MouseEvent) {
-  const target = e.target as HTMLElement;
-  const line = Number(target.closest<HTMLElement>("[data-line]")?.dataset.line) || undefined;
-  if (target instanceof HTMLInputElement && target.type === "checkbox") {
-    e.preventDefault();
-    if (line) {
-      pushUndo();
-      updateBody(toggleTask(body.value, line));
-    }
-    return;
-  }
-  const link = target.closest("a");
-  if (link) {
-    e.preventDefault();
-    const href = link.getAttribute("href");
-    if (href) void openUrl(href);
-    return;
-  }
-  // Let people select rendered text to copy it without jumping into edit mode.
-  if (window.getSelection()?.toString()) return;
-  void beginEditing(line);
-}
-
-// Window-level shortcuts work in both the rendered view and the editor.
 function onWindowKey(e: KeyboardEvent) {
   const k = e.key.toLowerCase();
   if ((e.metaKey || e.ctrlKey) && e.shiftKey && k === "c") {
@@ -418,9 +332,6 @@ function onWindowKey(e: KeyboardEvent) {
   } else if (k === "escape") {
     showColors.value = false;
     showSend.value = false;
-  } else if (k === "enter" && !editing.value && !showSend.value && document.activeElement === document.body) {
-    e.preventDefault();
-    void beginEditing();
   }
 }
 
@@ -455,7 +366,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="!note" class="note loading" />
+  <div v-if="!note || !ready" class="note loading" />
   <div v-else :class="['note', `color-${note.color}`]">
     <header class="note-bar" data-tauri-drag-region>
       <button :class="['icon', { active: showColors }]" title="Change color" @click="toggleColors">
@@ -501,24 +412,9 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <textarea
-      v-if="editing"
-      ref="textarea"
-      class="note-body"
-      :value="body"
-      spellcheck="true"
-      :placeholder="PLACEHOLDER"
-      @input="onInput"
-      @keydown="onKeyDown"
-      @click="onTextareaClick"
-      @blur="onBlur"
-    />
-    <div v-else class="note-view" @click="onViewClick">
-      <div v-if="body.trim()" class="md" v-html="rendered" />
-      <p v-else class="placeholder">Click to write…</p>
-    </div>
+    <NoteEditor ref="editor" :markdown="body" :placeholder="PLACEHOLDER" :hooks="hooks" />
 
-    <ul v-if="editing && trigger && menuItems.length" ref="menuEl" class="menu" role="listbox">
+    <ul v-if="trigger && menuItems.length" ref="menuEl" class="menu" role="listbox">
       <li
         v-for="(item, i) in menuItems"
         :key="item.key"

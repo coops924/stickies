@@ -6,7 +6,7 @@ AI-powered desktop sticky notes for macOS, Windows and Linux that work hand in h
 - Just sticky notes, like macOS Stickies: no main window. Frameless, colorful, pin-on-top notes that remember where you left them.
 - Settings open in their own window only when you ask (tray icon → Settings…, ⚙ on a note, `/settings`, or ⌘, on macOS).
 - `/` commands and `@` mentions right in the note: `/summarize`, `/tasks`, `/rewrite`, `@claude …`, `@codex …`, `@[Another note]`.
-- Notes render Markdown (clickable checklists, links) and switch to plain text while you edit. AI replies are kept short and tidied.
+- A WYSIWYG editor (Milkdown on ProseMirror): headings, bold, bullets and checklists format as you type, and checkboxes are clickable — while the file on disk stays plain Markdown for your agents and tools. AI replies are kept short and tidied.
 - **Send** any note onward in a click: copy as a prompt, start a Claude Code or Codex session in a project folder, open it in the Claude app or ChatGPT, email it, or save a `.md`.
 - AI runs on **your own Claude Code or Codex sign-in** — or an API key if you prefer.
 - Pull notes into, and push notes out of, Claude Code and Codex through a built-in **MCP server** and skill.
@@ -128,11 +128,13 @@ cd src-tauri && cargo test
 
 ```
 src/                      Vue 3 UI
-  NoteWindow.vue          a sticky note: editor, rendered view, / and @ menus
+  NoteWindow.vue          a sticky note: chrome, / and @ menus, AI, commands
+  NoteEditor.vue          the Milkdown editor instance
+  editor.ts               editor setup: Markdown serialization, / and @ detection, keymap
   SendMenu.vue            send/handoff destinations (add new ones here)
   settings/               settings window tabs
   commands.ts             slash command and @ mention definitions
-  markdown.ts             rendering (markdown-it + DOMPurify) and Markdown helpers
+  markdown.ts             Markdown tidying and plain-text/prompt helpers
 src-tauri/src/
   store.rs                Markdown note storage shared by app, CLI and MCP
   mcp.rs                  MCP server (rmcp, stdio)
