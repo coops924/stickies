@@ -409,11 +409,21 @@ fn watch_notes(app: AppHandle) {
 
             let Ok(notes) = state(&app).store.list() else { continue };
             let current: HashSet<String> = notes.iter().map(|n| n.id.clone()).collect();
-            for note in notes.iter().filter(|n| !known.contains(&n.id)) {
+            {
+                // New notes open a window; the rest keep their title and pinned
+                // state in step with edits made outside the app.
                 let app2 = app.clone();
-                let note = note.clone();
+                let notes = notes.clone();
+                let known = known.clone();
                 let _ = app.run_on_main_thread(move || {
-                    let _ = open_note_window(&app2, &note);
+                    for note in &notes {
+                        if !known.contains(&note.id) {
+                            let _ = open_note_window(&app2, note);
+                        } else if let Some(win) = app2.get_webview_window(&note_label(&note.id)) {
+                            let _ = win.set_title(&note.title);
+                            let _ = win.set_always_on_top(note.pinned);
+                        }
+                    }
                 });
             }
             for gone in known.difference(&current) {

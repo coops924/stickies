@@ -105,6 +105,13 @@ One Markdown file per note, with a small header:
 
 Set `STICKIES_HOME` to use another folder (the app, CLI and MCP server all honor it). Deleted notes move to `trash/`.
 
+## Linux: pinning and Wayland
+
+Wayland has no protocol that lets an app keep its own window above others, so pinned notes
+silently stay behind other windows there. Stickies therefore runs through XWayland on Linux
+(`GDK_BACKEND=x11`) so `/pin` works. To force a native Wayland session instead — for example
+for fractional scaling — start it with `STICKIES_WAYLAND=1`, and expect pinning to do nothing.
+
 ## Building from source
 
 Prerequisites: [Rust](https://rustup.rs), Node.js 20+, and the [Tauri system dependencies](https://tauri.app/start/prerequisites/)
