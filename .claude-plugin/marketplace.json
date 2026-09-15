@@ -1,0 +1,14 @@
+{
+  "name": "stickies",
+  "description": "Claude Code plugin for Stickies, AI-powered desktop sticky notes.",
+  "owner": {
+    "name": "coops924"
+  },
+  "plugins": [
+    {
+      "name": "stickies",
+      "source": "./integrations/claude-code",
+      "description": "Work with your Stickies desktop sticky notes from Claude Code."
+    }
+  ]
+}

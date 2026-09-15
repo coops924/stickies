@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions for the hub and note windows",
+  "windows": ["hub", "note-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "opener:default",
+    "opener:allow-reveal-item-in-dir",
+    "clipboard-manager:allow-write-text"
+  ]
+}

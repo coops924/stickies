@@ -1,0 +1,11 @@
+{
+  "name": "stickies",
+  "version": "0.1.0",
+  "description": "Read, create and update your Stickies desktop sticky notes from Claude Code. Pair with the Stickies app's Connect button, which registers the MCP server.",
+  "author": {
+    "name": "coops924"
+  },
+  "repository": "https://github.com/coops924/stickies",
+  "license": "MIT",
+  "keywords": ["notes", "sticky-notes", "mcp"]
+}
