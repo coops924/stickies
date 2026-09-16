@@ -75,7 +75,11 @@ struct AppState {
     config: Mutex<Config>,
     layout: Mutex<Layout>,
     layout_dirty: Mutex<bool>,
+    /// Checking sign-in spawns the CLIs, so every note window shares one answer.
+    ai_status: Mutex<Option<(std::time::Instant, ai::ProviderStatus)>>,
 }
+
+const AI_STATUS_TTL: Duration = Duration::from_secs(60);
 
 type Res<T> = Result<T, String>;
 
@@ -325,9 +329,22 @@ async fn ai_run(app: AppHandle, request: ai::AiRequest) -> Res<ai::AiResponse> {
 }
 
 #[tauri::command]
-async fn ai_status(app: AppHandle) -> Res<ai::ProviderStatus> {
+async fn ai_status(app: AppHandle, refresh: Option<bool>) -> Res<ai::ProviderStatus> {
+    if refresh != Some(true) {
+        if let Some((checked, status)) = state(&app).ai_status.lock().unwrap().as_ref() {
+            if checked.elapsed() < AI_STATUS_TTL {
+                return Ok(status.clone());
+            }
+        }
+    }
     let config = state(&app).config.lock().unwrap().clone();
-    Ok(ai::status(&config).await)
+    let status = ai::status(&config).await;
+    *state(&app).ai_status.lock().unwrap() = Some((std::time::Instant::now(), status.clone()));
+    Ok(status)
+}
+
+fn forget_ai_status(app: &AppHandle) {
+    *state(app).ai_status.lock().unwrap() = None;
 }
 
 #[tauri::command]
@@ -340,11 +357,14 @@ fn set_config(app: AppHandle, config: Config) -> Res<()> {
     let st = state(&app);
     config.save(st.store.root()).map_err(|e| e.to_string())?;
     *st.config.lock().unwrap() = config;
+    drop(st);
+    forget_ai_status(&app);
     Ok(())
 }
 
 #[tauri::command]
-fn set_api_key(provider: String, key: String) -> Res<()> {
+fn set_api_key(app: AppHandle, provider: String, key: String) -> Res<()> {
+    forget_ai_status(&app);
     let name = match provider.as_str() {
         "anthropic" => secrets::ANTHROPIC,
         "openai" => secrets::OPENAI,
@@ -367,7 +387,9 @@ fn integration_status() -> Integrations {
 #[tauri::command]
 async fn integration_connect(app: AppHandle, agent: String) -> Res<IntegrationStatus> {
     let config = state(&app).config.lock().unwrap().clone();
-    integrations::connect(Agent::parse(&agent)?, &config).await
+    let status = integrations::connect(Agent::parse(&agent)?, &config).await;
+    forget_ai_status(&app);
+    status
 }
 
 #[tauri::command]
@@ -531,7 +553,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState { store, config: Mutex::new(config), layout: Mutex::new(layout), layout_dirty: Mutex::new(false) })
+        .manage(AppState {
+            store,
+            config: Mutex::new(config),
+            layout: Mutex::new(layout),
+            layout_dirty: Mutex::new(false),
+            ai_status: Mutex::new(None),
+        })
         .invoke_handler(tauri::generate_handler![
             list_notes,
             get_note,

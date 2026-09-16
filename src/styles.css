@@ -712,3 +712,32 @@ select:focus-visible {
   color: var(--ink-soft);
   text-decoration: line-through;
 }
+
+/* Frameless windows have no visible resize handle, so draw one. */
+.resize-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 4;
+  background: linear-gradient(
+    135deg,
+    transparent 52%,
+    rgba(0, 0, 0, 0.22) 52%,
+    rgba(0, 0, 0, 0.22) 60%,
+    transparent 60%,
+    transparent 72%,
+    rgba(0, 0, 0, 0.22) 72%,
+    rgba(0, 0, 0, 0.22) 80%,
+    transparent 80%
+  );
+}
+
+.note-status .link {
+  margin-left: auto;
+  color: inherit;
+  text-decoration: underline;
+  white-space: nowrap;
+}

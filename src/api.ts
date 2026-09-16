@@ -82,7 +82,7 @@ export const api = {
   exportNote: (id: string, path: string) => invoke<void>("export_note", { id, path }),
   ai: (request: { provider?: string; instruction: string; note: string; context: { title: string; body: string }[] }) =>
     invoke<{ provider: string; text: string }>("ai_run", { request }),
-  aiStatus: () => invoke<ProviderStatus>("ai_status"),
+  aiStatus: (refresh = false) => invoke<ProviderStatus>("ai_status", { refresh }),
   getConfig: () => invoke<Config>("get_config"),
   setConfig: (config: Config) => invoke<void>("set_config", { config }),
   setApiKey: (provider: "anthropic" | "openai", key: string) => invoke<void>("set_api_key", { provider, key }),

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { api, COLORS, errorText, PROVIDER_LABELS, type Color, type Note, type NotePatch } from "./api";
 import {
@@ -10,6 +11,7 @@ import {
   parseSlashLine,
   SLASH_COMMANDS,
   type CommandContext,
+  type SlashCommand,
 } from "./commands";
 import type { EditorHooks, Trigger } from "./editor";
 import { asPrompt, tidyMarkdown } from "./markdown";
@@ -45,6 +47,8 @@ const busy = ref<string | null>(null);
 const status = ref<{ text: string; error?: boolean } | null>(null);
 const showColors = ref(false);
 const showSend = ref(false);
+/** The AI command worth showing first: whichever provider is actually connected. */
+const preferred = ref<string | null>(null);
 
 const editor = ref<InstanceType<typeof NoteEditor> | null>(null);
 const menuEl = ref<HTMLUListElement | null>(null);
@@ -212,13 +216,43 @@ function makeContext(anchor?: string): CommandContext {
   };
 }
 
+/** Order: the connected AI command, then formatting, then everything else. */
+const GROUP_RANK: Record<string, number> = { format: 1, ai: 2 };
+function rank(command: SlashCommand) {
+  return command.name === preferred.value ? 0 : (GROUP_RANK[command.group ?? ""] ?? 3);
+}
+
+async function loadPreferred() {
+  try {
+    const [status, config] = await Promise.all([api.aiStatus(), api.getConfig()]);
+    const chosen = config.provider;
+    if (chosen === "claude-cli" || (chosen === "auto" && status.claude.logged_in)) preferred.value = "claude";
+    else if (chosen === "codex-cli" || (chosen === "auto" && status.codex.logged_in)) preferred.value = "codex";
+    else if (chosen.endsWith("-api") || status.anthropic_key || status.openai_key) preferred.value = "ask";
+    // Nothing connected: lead with the way to fix that.
+    else preferred.value = "settings";
+  } catch {
+    /* leave the default order */
+  }
+}
+
+/** Errors the user can fix in Settings get a shortcut to it. */
+const needsSetup = computed(() => !!status.value?.error && /provider is connected|not installed|not signed in/i.test(status.value.text));
+
+function startResize() {
+  void getCurrentWindow().startResizeDragging("SouthEast");
+}
+
 // ---- the / and @ menus
 
 const menuItems = computed<MenuItem[]>(() => {
   const t = trigger.value;
   if (!t) return [];
   if (t.kind === "/") {
-    return SLASH_COMMANDS.filter((c) => c.name.startsWith(t.query)).map((c) => ({
+    return SLASH_COMMANDS.filter((c) => c.name.startsWith(t.query))
+      .slice()
+      .sort((a, b) => rank(a) - rank(b))
+      .map((c) => ({
       key: c.name,
       label: `/${c.name}${c.arg ? ` ‹${c.arg}›` : ""}`,
       description: c.description,
@@ -356,6 +390,8 @@ let unlisten: UnlistenFn | undefined;
 onMounted(async () => {
   window.addEventListener("keydown", onWindowKey);
   window.addEventListener("blur", flush);
+  window.addEventListener("focus", loadPreferred);
+  void loadPreferred();
   await load();
   unlisten = await listen("notes-changed", load);
 });
@@ -363,6 +399,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onWindowKey);
   window.removeEventListener("blur", flush);
+  window.removeEventListener("focus", loadPreferred);
   unlisten?.();
 });
 </script>
@@ -435,7 +472,12 @@ onBeforeUnmount(() => {
 
     <footer v-if="busy || status" :class="['note-status', { error: status?.error && !busy }]" @click="status = null">
       <template v-if="busy"><span class="spinner" /> {{ busy }}</template>
-      <template v-else>{{ status?.text }}</template>
+      <template v-else>
+        {{ status?.text }}
+        <button v-if="needsSetup" class="link" @click.stop="api.openSettings()">Open settings</button>
+      </template>
     </footer>
+
+    <div class="resize-grip" title="Drag to resize" @mousedown.prevent="startResize" />
   </div>
 </template>

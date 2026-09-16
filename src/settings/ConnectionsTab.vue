@@ -22,7 +22,7 @@ const cards = computed(() =>
 
 async function refresh() {
   integrations.value = await api.integrationStatus();
-  providers.value = await api.aiStatus();
+  providers.value = await api.aiStatus(true);
 }
 
 onMounted(() => {

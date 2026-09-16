@@ -43,6 +43,8 @@ export interface CommandContext {
 export interface SlashCommand {
   name: string;
   description: string;
+  /** Sorting group: the connected AI command leads, then formatting. */
+  group?: "format" | "ai";
   /** Placeholder for the argument, when the command takes one. */
   arg?: string;
   argRequired?: boolean;
@@ -61,18 +63,19 @@ const toChecklist = (body: string) =>
     .join("\n");
 
 export const SLASH_COMMANDS: SlashCommand[] = [
-  { name: "bullet", description: "Bullet list", run: (ctx) => ctx.format("bullet") },
-  { name: "check", description: "Checklist item", run: (ctx) => ctx.format("checklist") },
-  { name: "number", description: "Numbered list", run: (ctx) => ctx.format("ordered") },
-  { name: "h1", description: "Big heading", run: (ctx) => ctx.format("h1") },
-  { name: "h2", description: "Medium heading", run: (ctx) => ctx.format("h2") },
-  { name: "quote", description: "Quote block", run: (ctx) => ctx.format("quote") },
-  { name: "code", description: "Code block", run: (ctx) => ctx.format("code") },
-  { name: "divider", description: "Horizontal line", run: (ctx) => ctx.format("divider") },
-  { name: "bold", description: "Bold the selected text", run: (ctx) => ctx.format("bold") },
-  { name: "italic", description: "Italicise the selected text", run: (ctx) => ctx.format("italic") },
-  { name: "plain", description: "Turn this block back into plain text", run: (ctx) => ctx.format("text") },
+  { group: "format", name: "bullet", description: "Bullet list", run: (ctx) => ctx.format("bullet") },
+  { group: "format", name: "check", description: "Checklist item", run: (ctx) => ctx.format("checklist") },
+  { group: "format", name: "number", description: "Numbered list", run: (ctx) => ctx.format("ordered") },
+  { group: "format", name: "h1", description: "Big heading", run: (ctx) => ctx.format("h1") },
+  { group: "format", name: "h2", description: "Medium heading", run: (ctx) => ctx.format("h2") },
+  { group: "format", name: "quote", description: "Quote block", run: (ctx) => ctx.format("quote") },
+  { group: "format", name: "code", description: "Code block", run: (ctx) => ctx.format("code") },
+  { group: "format", name: "divider", description: "Horizontal line", run: (ctx) => ctx.format("divider") },
+  { group: "format", name: "bold", description: "Bold the selected text", run: (ctx) => ctx.format("bold") },
+  { group: "format", name: "italic", description: "Italicise the selected text", run: (ctx) => ctx.format("italic") },
+  { group: "format", name: "plain", description: "Turn this block back into plain text", run: (ctx) => ctx.format("text") },
   {
+    group: "ai",
     name: "ask",
     description: "Ask AI a question about this note",
     arg: "question",
@@ -86,6 +89,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     run: (ctx) => ctx.openSend(),
   },
   {
+    group: "ai",
     name: "claude",
     description: "Ask Claude (via Claude Code)",
     arg: "prompt",
@@ -94,6 +98,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     run: (ctx, arg) => ctx.ai(arg, { mode: "insert", provider: "claude-cli" }),
   },
   {
+    group: "ai",
     name: "codex",
     description: "Ask Codex",
     arg: "prompt",
@@ -102,12 +107,14 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     run: (ctx, arg) => ctx.ai(arg, { mode: "insert", provider: "codex-cli" }),
   },
   {
+    group: "ai",
     name: "summarize",
     description: "Add a short AI summary",
     ai: true,
     run: (ctx) => ctx.ai("Summarize this note in 1-3 short bullet points. Output only the bullets.", { mode: "insert" }),
   },
   {
+    group: "ai",
     name: "tasks",
     description: "Extract action items as a checklist",
     ai: true,
@@ -117,6 +124,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
       }),
   },
   {
+    group: "ai",
     name: "rewrite",
     description: "Rewrite the note (optionally: how)",
     arg: "how",
@@ -127,12 +135,14 @@ export const SLASH_COMMANDS: SlashCommand[] = [
       }),
   },
   {
+    group: "ai",
     name: "fix",
     description: "Fix spelling and grammar",
     ai: true,
     run: (ctx) => ctx.ai("Fix spelling, grammar and punctuation only. Keep wording, structure and Markdown the same.", { mode: "replace" }),
   },
   {
+    group: "ai",
     name: "expand",
     description: "Flesh out the note with more detail",
     ai: true,
