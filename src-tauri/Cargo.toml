@@ -1,6 +1,6 @@
 [package]
 name = "stickies"
-version = "0.1.1"
+version = "0.1.2"
 description = "AI-powered desktop sticky notes that talk to Claude Code and Codex"
 authors = ["coops924"]
 license = "MIT"
