@@ -1,6 +1,21 @@
 import { COLORS, type Note } from "./api";
 import { asPrompt, tidyMarkdown } from "./markdown";
 
+/** Formatting applied to the current block or selection by the editor. */
+export type FormatAction =
+  | "bullet"
+  | "ordered"
+  | "checklist"
+  | "quote"
+  | "code"
+  | "divider"
+  | "h1"
+  | "h2"
+  | "text"
+  | "bold"
+  | "italic"
+  | "strike";
+
 /** What a command can do to the note it runs in. Implemented by NoteWindow. */
 export interface CommandContext {
   note: Note;
@@ -20,6 +35,8 @@ export interface CommandContext {
   openSettings: () => Promise<void>;
   /** Show the send / handoff menu. */
   openSend: () => void;
+  /** Format the current block or selection. */
+  format: (action: FormatAction) => void;
   toast: (message: string) => void;
 }
 
@@ -44,6 +61,17 @@ const toChecklist = (body: string) =>
     .join("\n");
 
 export const SLASH_COMMANDS: SlashCommand[] = [
+  { name: "bullet", description: "Bullet list", run: (ctx) => ctx.format("bullet") },
+  { name: "check", description: "Checklist item", run: (ctx) => ctx.format("checklist") },
+  { name: "number", description: "Numbered list", run: (ctx) => ctx.format("ordered") },
+  { name: "h1", description: "Big heading", run: (ctx) => ctx.format("h1") },
+  { name: "h2", description: "Medium heading", run: (ctx) => ctx.format("h2") },
+  { name: "quote", description: "Quote block", run: (ctx) => ctx.format("quote") },
+  { name: "code", description: "Code block", run: (ctx) => ctx.format("code") },
+  { name: "divider", description: "Horizontal line", run: (ctx) => ctx.format("divider") },
+  { name: "bold", description: "Bold the selected text", run: (ctx) => ctx.format("bold") },
+  { name: "italic", description: "Italicise the selected text", run: (ctx) => ctx.format("italic") },
+  { name: "plain", description: "Turn this block back into plain text", run: (ctx) => ctx.format("text") },
   {
     name: "ask",
     description: "Ask AI a question about this note",
@@ -156,9 +184,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
 ];
 
 export const AGENT_MENTIONS = [
-  { name: "claude", provider: "claude-cli", description: "Ask Claude about this line" },
-  { name: "codex", provider: "codex-cli", description: "Ask Codex about this line" },
-  { name: "ai", provider: "auto", description: "Ask your default AI provider" },
+  { name: "claude", provider: "claude-cli", description: "Type a prompt, press Enter — the reply lands here" },
+  { name: "codex", provider: "codex-cli", description: "Type a prompt, press Enter — Codex replies here" },
+  { name: "ai", provider: "auto", description: "Type a prompt, press Enter — your default AI replies here" },
 ] as const;
 
 /** `@[Note title]` references in a note body. */
@@ -168,7 +196,7 @@ export function noteReferences(body: string): string[] {
 
 /** A typed `/command args` line, when the command exists. */
 export function parseSlashLine(line: string): { command: SlashCommand; arg: string } | null {
-  const m = line.match(/^\s*\/([a-z]+)(?:\s+(.*))?$/i);
+  const m = line.match(/(?:^|\s)\/([a-z]+)(?:\s+(.*))?$/i);
   if (!m) return null;
   const command = SLASH_COMMANDS.find((c) => c.name === m[1].toLowerCase());
   if (!command) return null;

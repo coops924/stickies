@@ -26,8 +26,12 @@ const NOTE_PREFIX: &str = "note-";
 const INTRO_WELCOME: &str = "# Welcome to Stickies
 Your notes live on the desktop and save as you type.
 
-- Type **/** at the start of a line for commands
-- **@claude** or **@codex** then Enter asks AI about a line
+**Ask AI right in a note:** type `@claude` (or `@codex`), write what you want,
+then press **Enter**. The answer appears in the note, under your question.
+Try it here: `@claude give me three ideas for a weekend project`
+
+Type **/** anywhere for commands: bullets, checklists, colors, /summarize.
+
 - The **send** button hands a note to Claude Code, Codex, Claude or ChatGPT
 - **Ctrl/⌘+Shift+C** copies a note as a prompt
 - Close a note to hide it; bring it back from the tray icon

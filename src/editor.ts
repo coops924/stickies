@@ -133,7 +133,9 @@ function uiPlugin(hooks: EditorHooks) {
           update: (view) => {
             const line = lineBeforeCursor(view);
             if (!line) return hooks.onTrigger(null);
-            const slash = line.text.match(/^\s*\/([a-z]*)$/i);
+            // A slash anywhere after a space opens the menu, not just at the
+            // start of a line.
+            const slash = line.text.match(/(?:^|\s)\/([a-z]*)$/i);
             if (slash) {
               const to = view.state.selection.from;
               return hooks.onTrigger({ kind: "/", query: slash[1].toLowerCase(), from: to - slash[1].length - 1, to });

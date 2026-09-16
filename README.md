@@ -12,6 +12,40 @@ AI-powered desktop sticky notes for macOS, Windows and Linux that work hand in h
 - Pull notes into, and push notes out of, Claude Code and Codex through a built-in **MCP server** and skill.
 - Notes are plain Markdown files you own. There's also a `stickies` CLI.
 
+## Install
+
+### Download a build
+
+Grab the installer for your OS from the [Releases page](https://github.com/coops924/stickies/releases):
+
+| OS | File | Notes |
+| --- | --- | --- |
+| macOS | `.dmg` (Apple silicon or Intel) | Unsigned for now: first launch is right-click → **Open** → **Open** |
+| Windows | `.msi` or `.exe` | Needs WebView2, which Windows 10/11 already ships |
+| Linux | `.AppImage`, `.deb` or `.rpm` | AppImage: `chmod +x Stickies*.AppImage && ./Stickies*.AppImage` |
+
+No release is published yet — until the first tag, build it yourself below.
+
+### Build from source (macOS, Windows, Linux)
+
+1. Install [Rust](https://rustup.rs) and [Node.js 20+](https://nodejs.org).
+2. Install your platform's [Tauri prerequisites](https://tauri.app/start/prerequisites/):
+   - **macOS:** `xcode-select --install`
+   - **Windows:** Visual Studio Build Tools with the C++ workload
+   - **Debian/Ubuntu:** `sudo apt install libwebkit2gtk-4.1-dev build-essential curl file libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf`
+   - **Fedora:** `sudo dnf install webkit2gtk4.1-devel openssl-devel libappindicator-gtk3-devel librsvg2-devel`
+   - **Arch:** `sudo pacman -S webkit2gtk-4.1 base-devel openssl libayatana-appindicator librsvg`
+3. Build it:
+
+```sh
+git clone https://github.com/coops924/stickies.git
+cd stickies
+npm install
+npm run tauri build    # installers land in src-tauri/target/release/bundle
+npm run tauri dev      # or just run it in development
+```
+
+
 ## How sign-in works
 
 Stickies never asks for, stores, or proxies your Claude or ChatGPT account credentials. Instead:
@@ -61,11 +95,15 @@ plus each note as a `note://<id>` resource.
 
 ## In-note commands
 
-Type `/` at the start of a line or `@` anywhere. Commands that take text run when you press **Enter**
-(**Shift+Enter** inserts a plain newline).
+Type `/` anywhere (start of a line or after a space) for commands, and `@` to mention an agent or another note.
+Commands that take text run when you press **Enter** (**Shift+Enter** inserts a plain newline).
+
+To ask AI inside a note: type `@claude`, write your prompt, and press **Enter** — the reply appears in the note, under your line.
 
 | Command | What it does |
 | --- | --- |
+| `/bullet` · `/check` · `/number` · `/h1` · `/h2` · `/quote` · `/code` · `/divider` | Formatting, applied where the cursor is |
+| `/bold` · `/italic` · `/plain` | Style the selection, or turn a block back into plain text |
 | `/ask ‹question›` | Ask your default AI; the answer is inserted |
 | `/claude ‹prompt›` · `/codex ‹prompt›` | Ask a specific agent |
 | `/summarize` · `/tasks` | Insert a summary / checklist of action items |
@@ -111,18 +149,6 @@ Wayland has no protocol that lets an app keep its own window above others, so pi
 silently stay behind other windows there. Stickies therefore runs through XWayland on Linux
 (`GDK_BACKEND=x11`) so `/pin` works. To force a native Wayland session instead — for example
 for fractional scaling — start it with `STICKIES_WAYLAND=1`, and expect pinning to do nothing.
-
-## Building from source
-
-Prerequisites: [Rust](https://rustup.rs), Node.js 20+, and the [Tauri system dependencies](https://tauri.app/start/prerequisites/)
-for your OS.
-
-```sh
-npm install
-npm run tauri dev      # run in development
-npm run tauri build    # installers in src-tauri/target/release/bundle
-cd src-tauri && cargo test
-```
 
 ## Project layout
 

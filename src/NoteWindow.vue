@@ -33,7 +33,7 @@ const SAVE_DELAY = 400;
 // On macOS the menu bar handles Cmd+N and Cmd+W.
 const IS_MAC = navigator.userAgent.includes("Mac");
 const MOD = IS_MAC ? "⌘" : "Ctrl+";
-const PLACEHOLDER = "Type / for commands, @claude to ask AI…";
+const PLACEHOLDER = "Type / for commands · type @claude ask me anything and press Enter";
 
 const note = ref<Note | null>(null);
 const body = ref("");
@@ -207,6 +207,7 @@ function makeContext(anchor?: string): CommandContext {
       showColors.value = false;
       showSend.value = true;
     },
+    format: (action) => editor.value?.format(action),
     toast: (m) => toast(m),
   };
 }
@@ -270,6 +271,7 @@ function chooseMenuItem(item: MenuItem) {
   if (!t) return;
   trigger.value = null;
   editor.value?.completeTrigger(t, item.insert);
+  if (item.key.startsWith("agent-")) toast("Type your prompt, then press Enter");
   if (item.runNow) {
     const line = editor.value?.currentLine() ?? "";
     if (onEnterLine(line)) return;
@@ -280,7 +282,7 @@ function chooseMenuItem(item: MenuItem) {
 function onEnterLine(line: string): boolean {
   const slash = parseSlashLine(line);
   if (slash) {
-    editor.value?.clearLine();
+    editor.value?.clearSlashSegment();
     void slash.command.run(makeContext(), slash.arg);
     return true;
   }

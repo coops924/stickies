@@ -1,9 +1,34 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { editorViewCtx, type Editor } from "@milkdown/kit/core";
+import {
+  createCodeBlockCommand,
+  insertHrCommand,
+  toggleEmphasisCommand,
+  toggleStrongCommand,
+  turnIntoTextCommand,
+  wrapInBlockquoteCommand,
+  wrapInBulletListCommand,
+  wrapInHeadingCommand,
+  wrapInOrderedListCommand,
+} from "@milkdown/kit/preset/commonmark";
+import { toggleStrikethroughCommand } from "@milkdown/kit/preset/gfm";
 import type { EditorView } from "@milkdown/kit/prose/view";
-import { replaceAll } from "@milkdown/kit/utils";
+import { callCommand, replaceAll } from "@milkdown/kit/utils";
+import type { FormatAction } from "./commands";
 import { makeEditor, type EditorHooks, type Trigger } from "./editor";
+
+const FORMAT_COMMANDS = {
+  bullet: wrapInBulletListCommand,
+  ordered: wrapInOrderedListCommand,
+  quote: wrapInBlockquoteCommand,
+  code: createCodeBlockCommand,
+  divider: insertHrCommand,
+  text: turnIntoTextCommand,
+  bold: toggleStrongCommand,
+  italic: toggleEmphasisCommand,
+  strike: toggleStrikethroughCommand,
+} as const;
 
 const props = defineProps<{
   /** Initial Markdown. Later changes are pushed with `setMarkdown`, not this prop. */
@@ -43,12 +68,40 @@ defineExpose({
       view.focus();
     });
   },
-  /** Remove the text of the line the cursor is on (a command that just ran). */
-  clearLine() {
+  /** Remove the `/command …` the user just ran, keeping the rest of the line. */
+  clearSlashSegment() {
     withView((view) => {
       const { $from } = view.state.selection;
-      view.dispatch(view.state.tr.delete($from.start(), $from.end()));
+      const before = $from.parent.textBetween(0, $from.parentOffset, "\n", "\n");
+      const match = before.match(/(?:^|\s)(\/[a-z]*(?:\s.*)?)$/i);
+      const cut = match ? before.length - match[1].length : 0;
+      view.dispatch(view.state.tr.delete($from.start() + cut, $from.end()));
+      view.focus();
     });
+  },
+
+  /** Apply a formatting command to the block or selection. */
+  format(action: FormatAction) {
+    if (action === "checklist") {
+      editor?.action(callCommand(wrapInBulletListCommand.key));
+      withView((view) => {
+        const { $from } = view.state.selection;
+        for (let depth = $from.depth; depth > 0; depth--) {
+          if ($from.node(depth).type.name === "list_item") {
+            view.dispatch(view.state.tr.setNodeAttribute($from.before(depth), "checked", false));
+            break;
+          }
+        }
+        view.focus();
+      });
+      return;
+    }
+    if (action === "h1" || action === "h2") {
+      editor?.action(callCommand(wrapInHeadingCommand.key, action === "h1" ? 1 : 2));
+    } else {
+      editor?.action(callCommand(FORMAT_COMMANDS[action].key));
+    }
+    withView((view) => view.focus());
   },
   /** Text of the line the cursor is on. */
   currentLine(): string {
