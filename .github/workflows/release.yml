@@ -93,7 +93,8 @@ jobs:
   check-assets:
     needs: [create-release, build]
     permissions:
-      contents: read
+      # Draft releases are only visible to tokens with push access.
+      contents: write
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/github-script@v7
