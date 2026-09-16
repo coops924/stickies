@@ -26,8 +26,6 @@ Grab the installer for your OS from the [Releases page](https://github.com/coops
 | Windows | `.msi` or `.exe` | Needs WebView2, which Windows 10/11 already ships |
 | Linux | `.AppImage`, `.deb` or `.rpm` | AppImage: `chmod +x Stickies*.AppImage && ./Stickies*.AppImage` |
 
-No release is published yet — until the first tag, build it yourself below.
-
 ### Build from source (macOS, Windows, Linux)
 
 1. Install [Rust](https://rustup.rs) and [Node.js 20+](https://nodejs.org).
