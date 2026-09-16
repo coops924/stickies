@@ -90,6 +90,18 @@ jobs:
         shell: bash
         run: find src-tauri/target -type d -name bundle -exec find {} -maxdepth 2 -type f \; | head -50
 
+      # A macOS bundle with no code signature downloads as "damaged" and cannot
+      # be opened at all on Apple silicon. Catch that here, not in Downloads.
+      - name: Verify the macOS bundle is signed
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          app=$(find src-tauri/target -type d -name 'Stickies.app' -print -quit)
+          if [ -z "$app" ]; then echo "No Stickies.app was built"; exit 1; fi
+          echo "Checking $app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --display --verbose=2 "$app"
+
   check-assets:
     needs: [create-release, build]
     permissions:

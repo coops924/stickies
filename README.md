@@ -22,7 +22,7 @@ Grab the installer for your OS from the [Releases page](https://github.com/coops
 
 | OS | File | Notes |
 | --- | --- | --- |
-| macOS | `.dmg` (Apple silicon or Intel) | Unsigned for now: first launch is right-click → **Open** → **Open** |
+| macOS | `.dmg` (Apple silicon or Intel) | Unsigned for now: first launch is right-click → **Open** → **Open**. If macOS says the app is *damaged*, it was quarantined: `xattr -dr com.apple.quarantine /Applications/Stickies.app` |
 | Windows | `.msi` or `.exe` | Needs WebView2, which Windows 10/11 already ships |
 | Linux | `.AppImage`, `.deb` or `.rpm` | AppImage: `chmod +x Stickies*.AppImage && ./Stickies*.AppImage` |
 

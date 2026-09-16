@@ -22,6 +22,9 @@
     "category": "Productivity",
     "shortDescription": "AI sticky notes for Claude Code and Codex",
     "longDescription": "Desktop sticky notes with slash and @ commands, AI actions powered by your own Claude Code or Codex sign-in, and an MCP server so coding agents can read and write your notes.",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
