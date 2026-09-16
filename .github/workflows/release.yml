@@ -5,8 +5,38 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# One job creates the draft release, then every platform uploads into that same
+# release by id. Letting each matrix job create its own release races: they end
+# up as separate drafts for one tag, and the assets scatter between them.
 jobs:
+  create-release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - uses: actions/github-script@v7
+        id: create
+        with:
+          result-encoding: string
+          script: |
+            const tag = context.ref.startsWith('refs/tags/') ? context.ref.replace('refs/tags/', '') : `manual-${context.runNumber}`;
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `Stickies ${tag}`,
+              body: 'Download the installer for your platform below.',
+              draft: true,
+              prerelease: false,
+              generate_release_notes: false,
+            });
+            core.notice(`Draft release ${data.id} for ${tag}`);
+            return data.id;
+
   build:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -51,9 +81,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Stickies ${{ github.ref_name }}
-          releaseBody: See the assets below to download and install this version.
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
+
+      # Proof the bundles exist even if uploading ever fails again.
+      - name: List built bundles
+        if: always()
+        shell: bash
+        run: find src-tauri/target -type d -name bundle -exec find {} -maxdepth 2 -type f \; | head -50
+
+  check-assets:
+    needs: [create-release, build]
+    permissions:
+      contents: read
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.getRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release_id }},
+            });
+            const names = data.assets.map((a) => `${a.name} (${Math.round(a.size / 1024)} KiB)`);
+            core.notice(`Draft release has ${names.length} assets:\n${names.join('\n')}`);
+            if (names.length === 0) core.setFailed('No installers were attached to the release.');
