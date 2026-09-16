@@ -50,7 +50,7 @@ const MENTIONS = [
     <div class="panel">
       <h2>Shortcuts</h2>
       <p>
-        <kbd>Ctrl/⌘ N</kbd> new note · <kbd>Ctrl/⌘ W</kbd> hide note · <kbd>Ctrl/⌘ Shift C</kbd> copy note as a prompt ·
+        <kbd>Ctrl/⌘ N</kbd> new note · <kbd>Ctrl/⌘ W</kbd> hide note · <kbd>Ctrl/⌘ Shift C</kbd> copy note as a prompt · <kbd>Ctrl/⌘ F</kbd> find notes ·
         <kbd>Shift Enter</kbd> newline without running a command · <kbd>Esc</kbd> stop editing
       </p>
     </div>

@@ -14,7 +14,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, SubmenuBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent, Wry};
+use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent, Wry};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use config::Config;
 use integrations::{Agent, IntegrationStatus};
@@ -61,7 +62,13 @@ struct Frame {
     w: f64,
     h: f64,
     open: bool,
+    /// Rolled up to just its title bar; `h` stays the expanded height.
+    #[serde(default)]
+    collapsed: bool,
 }
+
+/// Height of a rolled-up note: the header, and nothing else.
+const COLLAPSED_H: f64 = 30.0;
 
 /// Window positions and open/closed state, kept apart from note files so that
 /// dragging a note around doesn't rewrite it (or wake the MCP file watchers).
@@ -77,6 +84,8 @@ struct AppState {
     layout_dirty: Mutex<bool>,
     /// Checking sign-in spawns the CLIs, so every note window shares one answer.
     ai_status: Mutex<Option<(std::time::Instant, ai::ProviderStatus)>>,
+    /// Tab the settings window should open on, read once when it loads.
+    settings_tab: Mutex<Option<String>>,
 }
 
 const AI_STATUS_TTL: Duration = Duration::from_secs(60);
@@ -113,6 +122,7 @@ fn open_note_window(app: &AppHandle, note: &Note) -> Res<WebviewWindow> {
             w: 280.0,
             h: 300.0,
             open: true,
+            collapsed: false,
         });
         frame.open = true;
         *frame
@@ -169,7 +179,7 @@ fn create_intro_notes(app: &AppHandle) -> Res<()> {
         let note = st.store.create(body, Some(color), vec![]).map_err(|e| e.to_string())?;
         st.layout.lock().unwrap().frames.insert(
             note.id.clone(),
-            Frame { x: 100.0 + i as f64 * 310.0, y: 120.0 + i as f64 * 28.0, w: 290.0, h: 330.0, open: true },
+            Frame { x: 100.0 + i as f64 * 310.0, y: 120.0 + i as f64 * 28.0, w: 290.0, h: 330.0, open: true, collapsed: false },
         );
         created.push(note);
     }
@@ -196,8 +206,10 @@ fn record_frame(app: &AppHandle, win: &tauri::Window) {
     if let Some(frame) = layout.frames.get_mut(id) {
         frame.x = pos.x as f64 / scale;
         frame.y = pos.y as f64 / scale;
-        frame.w = size.width as f64 / scale;
-        frame.h = size.height as f64 / scale;
+        if !frame.collapsed {
+            frame.w = size.width as f64 / scale;
+            frame.h = size.height as f64 / scale;
+        }
         *st.layout_dirty.lock().unwrap() = true;
     }
 }
@@ -220,6 +232,30 @@ fn save_layout(app: &AppHandle) {
     if std::fs::write(st.store.root().join("layout.json"), json).is_ok() {
         *dirty = false;
     }
+}
+
+/// Tiles the open notes across the primary screen, left to right.
+fn arrange_all(app: &AppHandle) -> Res<()> {
+    let Some(monitor) = app.primary_monitor().map_err(|e| e.to_string())? else { return Ok(()) };
+    let screen = monitor.size().to_logical::<f64>(monitor.scale_factor());
+    let gap = 16.0;
+    let (mut x, mut y, mut row_height) = (gap, gap, 0.0_f64);
+    let mut windows: Vec<(String, WebviewWindow)> =
+        app.webview_windows().into_iter().filter(|(label, _)| label.starts_with(NOTE_PREFIX)).collect();
+    windows.sort_by(|a, b| a.0.cmp(&b.0));
+    for (_, win) in windows {
+        let scale = win.scale_factor().unwrap_or(1.0);
+        let size = win.outer_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
+        if x + size.width > screen.width - gap {
+            x = gap;
+            y += row_height + gap;
+            row_height = 0.0;
+        }
+        let _ = win.set_position(LogicalPosition::new(x, y));
+        x += size.width + gap;
+        row_height = row_height.max(size.height);
+    }
+    Ok(())
 }
 
 fn new_note(app: &AppHandle, body: &str, color: Option<&str>) -> Res<Note> {
@@ -287,8 +323,53 @@ fn close_note(app: AppHandle, id: String) -> Res<()> {
 }
 
 #[tauri::command]
-async fn open_settings(app: AppHandle) -> Res<()> {
+async fn open_settings(app: AppHandle, tab: Option<String>) -> Res<()> {
+    if let Some(tab) = tab {
+        *state(&app).settings_tab.lock().unwrap() = Some(tab.clone());
+        // The window may already be open, in which case it switches tab now.
+        let _ = app.emit("settings-tab", tab);
+    }
     open_settings_window(&app)
+}
+
+/// Read once by the settings window as it loads.
+#[tauri::command]
+fn take_settings_tab(app: AppHandle) -> Option<String> {
+    state(&app).settings_tab.lock().unwrap().take()
+}
+
+#[tauri::command]
+fn list_trash(app: AppHandle) -> Res<Vec<Note>> {
+    state(&app).store.list_trash().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn restore_note(app: AppHandle, id: String) -> Res<Note> {
+    let note = state(&app).store.restore(&id).map_err(|e| e.to_string())?;
+    open_note_window(&app, &note)?;
+    Ok(note)
+}
+
+/// Rolls a note up to its title bar, or back down again.
+#[tauri::command]
+async fn toggle_collapse(app: AppHandle, id: String) -> Res<bool> {
+    let win = app.get_webview_window(&note_label(&id)).ok_or("that note isn't open")?;
+    let st = state(&app);
+    let (collapsed, width, height) = {
+        let mut layout = st.layout.lock().unwrap();
+        let frame = layout.frames.get_mut(&id).ok_or("unknown note")?;
+        frame.collapsed = !frame.collapsed;
+        (frame.collapsed, frame.w, frame.h)
+    };
+    *st.layout_dirty.lock().unwrap() = true;
+    win.set_size(LogicalSize::new(width, if collapsed { COLLAPSED_H } else { height }))
+        .map_err(|e| e.to_string())?;
+    Ok(collapsed)
+}
+
+#[tauri::command]
+async fn arrange_notes(app: AppHandle) -> Res<()> {
+    arrange_all(&app)
 }
 
 #[tauri::command]
@@ -323,9 +404,13 @@ fn export_note(app: AppHandle, id: String, path: String) -> Res<()> {
 }
 
 #[tauri::command]
-async fn ai_run(app: AppHandle, request: ai::AiRequest) -> Res<ai::AiResponse> {
+async fn ai_run(app: AppHandle, window: WebviewWindow, request: ai::AiRequest) -> Res<ai::AiResponse> {
     let config = state(&app).config.lock().unwrap().clone();
-    ai::run(request, &config).await
+    // Deltas go only to the note that asked for them.
+    let sink = move |text: &str| {
+        let _ = window.emit("ai-delta", text);
+    };
+    ai::run(request, &config, Some(&sink)).await
 }
 
 #[tauri::command]
@@ -475,6 +560,16 @@ fn handle_menu(app: &AppHandle, id: &str) {
             let _ = show_all(app);
         }
         "hide" => hide_all(app),
+        "arrange" => {
+            let _ = arrange_all(app);
+        }
+        "clipboard" => {
+            let text = app.clipboard().read_text().unwrap_or_default();
+            if text.trim().is_empty() {
+                return;
+            }
+            let _ = new_note(app, text.trim(), None);
+        }
         "settings" => {
             let _ = open_settings_window(app);
         }
@@ -488,12 +583,14 @@ fn handle_menu(app: &AppHandle, id: &str) {
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let new = MenuItem::with_id(app, "new", "New Note", true, None::<&str>)?;
+    let clipboard = MenuItem::with_id(app, "clipboard", "New Note from Clipboard", true, None::<&str>)?;
     let show = MenuItem::with_id(app, "show", "Show All Notes", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "Hide All Notes", true, None::<&str>)?;
+    let arrange = MenuItem::with_id(app, "arrange", "Arrange Notes", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Stickies", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&new, &show, &hide, &sep, &settings, &sep, &quit])?;
+    let menu = Menu::with_items(app, &[&new, &clipboard, &sep, &show, &hide, &arrange, &sep, &settings, &sep, &quit])?;
 
     let mut tray = TrayIconBuilder::with_id("stickies").tooltip("Stickies").menu(&menu);
     if let Some(icon) = app.default_window_icon() {
@@ -559,6 +656,7 @@ pub fn run() {
             layout: Mutex::new(layout),
             layout_dirty: Mutex::new(false),
             ai_status: Mutex::new(None),
+            settings_tab: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             list_notes,
@@ -569,6 +667,11 @@ pub fn run() {
             open_note,
             close_note,
             open_settings,
+            take_settings_tab,
+            list_trash,
+            restore_note,
+            toggle_collapse,
+            arrange_notes,
             show_all_notes,
             notes_dir,
             open_in_agent,

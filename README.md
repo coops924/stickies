@@ -8,7 +8,9 @@ AI-powered desktop sticky notes for macOS, Windows and Linux that work hand in h
 - `/` commands and `@` mentions right in the note: `/summarize`, `/tasks`, `/rewrite`, `@claude …`, `@codex …`, `@[Another note]`.
 - A WYSIWYG editor (Milkdown on ProseMirror): headings, bold, bullets and checklists format as you type, and checkboxes are clickable — while the file on disk stays plain Markdown for your agents and tools. AI replies are kept short and tidied.
 - **Send** any note onward in a click: copy as a prompt, start a Claude Code or Codex session in a project folder, open it in the Claude app or ChatGPT, email it, or save a `.md`.
-- AI runs on **your own Claude Code or Codex sign-in** — or an API key if you prefer.
+- AI runs on **your own Claude Code or Codex sign-in** — or an API key if you prefer. Replies stream into the note as they're written.
+- **Right-click a note** for colors, pin, checklist, send and delete; **double-click its title bar** to roll it up. An empty note offers one-click starters.
+- **Find everything** in Settings → Notes (**Ctrl/⌘+F** from any note): search every note, reopen hidden ones, restore deleted ones.
 - Pull notes into, and push notes out of, Claude Code and Codex through a built-in **MCP server** and skill.
 - Notes are plain Markdown files you own. There's also a `stickies` CLI.
 
@@ -98,7 +100,9 @@ plus each note as a `note://<id>` resource.
 Type `/` anywhere (start of a line or after a space) for commands, and `@` to mention an agent or another note.
 Commands that take text run when you press **Enter** (**Shift+Enter** inserts a plain newline).
 
-To ask AI inside a note: type `@claude`, write your prompt, and press **Enter** — the reply appears in the note, under your line.
+To ask AI inside a note: type `@claude`, write your prompt, and press **Enter** — the reply streams into the note, under your line.
+
+Prefer clicking? **Right-click** a note for the same actions without typing.
 
 | Command | What it does |
 | --- | --- |
@@ -130,6 +134,17 @@ git log --oneline -5 | stickies append "Standup notes" -
 stickies search deploy
 stickies mcp                        # MCP server on stdio
 ```
+
+## Tray menu
+
+The tray icon is how you reach Stickies when no note is on screen:
+
+| Item | What it does |
+| --- | --- |
+| New Note · New Note from Clipboard | Start a note, empty or from whatever you just copied |
+| Show All Notes · Hide All Notes | Bring every note back, or clear the desktop (nothing is deleted) |
+| Arrange Notes | Tile the open notes across the screen |
+| Settings… · Quit Stickies | Settings window; quit (closing the last note only hides it) |
 
 ## Where notes live
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -11,6 +11,7 @@ import {
   parseSlashLine,
   SLASH_COMMANDS,
   type CommandContext,
+  type FormatAction,
   type SlashCommand,
 } from "./commands";
 import type { EditorHooks, Trigger } from "./editor";
@@ -47,6 +48,8 @@ const busy = ref<string | null>(null);
 const status = ref<{ text: string; error?: boolean } | null>(null);
 const showColors = ref(false);
 const showSend = ref(false);
+const collapsed = ref(false);
+const contextMenu = ref<{ x: number; y: number } | null>(null);
 /** The AI command worth showing first: whichever provider is actually connected. */
 const preferred = ref<string | null>(null);
 
@@ -55,6 +58,8 @@ const menuEl = ref<HTMLUListElement | null>(null);
 
 let lastSaved = "";
 let saveTimer: number | undefined;
+/** True while an AI reply is streaming into the note. */
+let streaming = false;
 const undoStack: string[] = [];
 
 // ---- saving and loading
@@ -83,6 +88,7 @@ async function flush() {
 /** The editor reported an edit: remember it, then save shortly after. */
 function onMarkdown(markdown: string) {
   body.value = markdown;
+  if (streaming) return;
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(flush, SAVE_DELAY);
 }
@@ -139,8 +145,8 @@ async function copyAsPrompt() {
   toast("Copied as a prompt — paste into Claude Code or Codex");
 }
 
-function pushUndo() {
-  undoStack.push(body.value);
+function pushUndo(value = body.value) {
+  undoStack.push(value);
   if (undoStack.length > 50) undoStack.shift();
 }
 
@@ -163,16 +169,22 @@ async function runAi(instruction: string, opts: { mode: "insert" | "replace"; pr
     .filter((n): n is Note => !!n)
     .map((n) => ({ title: n.title, body: n.body }));
   const who = opts.provider && opts.provider !== "auto" ? PROVIDER_LABELS[opts.provider] : "AI";
+  const base = body.value;
   busy.value = `${who} is thinking…`;
+  streaming = true;
   try {
-    const res = await api.ai({ provider: opts.provider, instruction, note: body.value, context });
+    const res = await api.ai({ provider: opts.provider, instruction, note: base, context });
     const reply = tidyMarkdown(res.text);
-    pushUndo();
-    applyMarkdown(opts.mode === "replace" ? reply : insertAfterLine(body.value, anchor, reply));
+    streaming = false;
+    pushUndo(base);
+    applyMarkdown(opts.mode === "replace" ? reply : insertAfterLine(base, anchor, reply));
     toast(`${PROVIDER_LABELS[res.provider] ?? res.provider} ✓ — /undo to revert`);
   } catch (e) {
+    // Drop the half-streamed preview and put the note back as it was.
+    if (streaming && body.value !== base) applyMarkdown(base);
     toast(errorText(e), true);
   } finally {
+    streaming = false;
     busy.value = null;
   }
 }
@@ -238,6 +250,50 @@ async function loadPreferred() {
 
 /** Errors the user can fix in Settings get a shortcut to it. */
 const needsSetup = computed(() => !!status.value?.error && /provider is connected|not installed|not signed in/i.test(status.value.text));
+
+/** The one-click starters shown while a note is still empty. */
+const starters = computed(() => {
+  const agent = preferred.value === "codex" ? "codex" : "claude";
+  return [
+    { label: `Ask ${agent === "codex" ? "Codex" : "Claude"}`, run: () => startPrompt(agent) },
+    { label: "Checklist", run: () => startFormat("checklist") },
+    { label: "Bullet list", run: () => startFormat("bullet") },
+    { label: "Heading", run: () => startFormat("h1") },
+  ];
+});
+
+async function startPrompt(agent: string) {
+  applyMarkdown(`@${agent} `);
+  await nextTick();
+  editor.value?.focusEnd();
+  toast("Type your prompt, then press Enter");
+}
+
+async function startFormat(action: FormatAction) {
+  editor.value?.focusEnd();
+  await nextTick();
+  editor.value?.format(action);
+}
+
+async function toggleCollapse() {
+  try {
+    collapsed.value = await api.toggleCollapse(props.id);
+  } catch (e) {
+    toast(errorText(e), true);
+  }
+}
+
+function openContextMenu(event: MouseEvent) {
+  showColors.value = false;
+  showSend.value = false;
+  // Keep the menu inside the note window.
+  contextMenu.value = { x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 250) };
+}
+
+function runFromMenu(action: () => unknown) {
+  contextMenu.value = null;
+  void action();
+}
 
 function startResize() {
   void getCurrentWindow().startResizeDragging("SouthEast");
@@ -365,10 +421,22 @@ function onWindowKey(e: KeyboardEvent) {
   } else if (!IS_MAC && e.ctrlKey && !e.shiftKey && k === "w") {
     e.preventDefault();
     void closeNote();
+  } else if ((e.metaKey || e.ctrlKey) && k === "f") {
+    e.preventDefault();
+    void api.openSettings("notes");
   } else if (k === "escape") {
     showColors.value = false;
     showSend.value = false;
+    contextMenu.value = null;
   }
+}
+
+function togglePin() {
+  if (note.value) void save({ pinned: !note.value.pinned });
+}
+
+function dismissContextMenu(event: MouseEvent) {
+  if (contextMenu.value && !(event.target as HTMLElement).closest(".context-menu")) contextMenu.value = null;
 }
 
 function toggleColors() {
@@ -387,10 +455,17 @@ function pickColor(color: Color) {
 }
 
 let unlisten: UnlistenFn | undefined;
+let unlistenDelta: UnlistenFn | undefined;
 onMounted(async () => {
+  unlistenDelta = await listen<string>("ai-delta", (event) => {
+    if (!streaming) return;
+    if (busy.value?.includes("thinking")) busy.value = busy.value.replace("thinking", "writing");
+    editor.value?.appendText(event.payload);
+  });
   window.addEventListener("keydown", onWindowKey);
   window.addEventListener("blur", flush);
   window.addEventListener("focus", loadPreferred);
+  window.addEventListener("mousedown", dismissContextMenu);
   void loadPreferred();
   await load();
   unlisten = await listen("notes-changed", load);
@@ -400,14 +475,16 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onWindowKey);
   window.removeEventListener("blur", flush);
   window.removeEventListener("focus", loadPreferred);
+  window.removeEventListener("mousedown", dismissContextMenu);
   unlisten?.();
+  unlistenDelta?.();
 });
 </script>
 
 <template>
   <div v-if="!note || !ready" class="note loading" />
-  <div v-else :class="['note', `color-${note.color}`]">
-    <header class="note-bar" data-tauri-drag-region>
+  <div v-else :class="['note', `color-${note.color}`]" @contextmenu.prevent="openContextMenu">
+    <header class="note-bar" data-tauri-drag-region :title="collapsed ? 'Double-click to unroll' : 'Double-click to roll up'" @dblclick="toggleCollapse">
       <button :class="['icon', { active: showColors }]" title="Change color" @click="toggleColors">
         <Icon name="palette" />
       </button>
@@ -452,6 +529,34 @@ onBeforeUnmount(() => {
     </div>
 
     <NoteEditor ref="editor" :markdown="body" :placeholder="PLACEHOLDER" :hooks="hooks" />
+
+    <div v-if="!body.trim() && !busy" class="starter-chips">
+      <button v-for="starter in starters" :key="starter.label" class="chip" @click="starter.run()">{{ starter.label }}</button>
+    </div>
+
+    <ul v-if="contextMenu" class="popover context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" role="menu">
+      <li><button class="popover-item" @click="runFromMenu(() => newNote())">New note</button></li>
+      <li><button class="popover-item" @click="runFromMenu(() => startFormat('checklist'))">Checklist</button></li>
+      <li><button class="popover-item" @click="runFromMenu(() => startFormat('bullet'))">Bullet list</button></li>
+      <li><button class="popover-item" @click="runFromMenu(togglePin)">{{ note.pinned ? "Unpin" : "Pin on top" }}</button></li>
+      <li><button class="popover-item" @click="runFromMenu(toggleCollapse)">{{ collapsed ? "Unroll" : "Roll up" }}</button></li>
+      <li><button class="popover-item" @click="runFromMenu(copyAsPrompt)">Copy as prompt</button></li>
+      <li>
+        <button class="popover-item" @click="contextMenu = null; showSend = true">Send…</button>
+      </li>
+      <li><button class="popover-item" @click="runFromMenu(() => api.openSettings('notes'))">Find notes…</button></li>
+      <li><button class="popover-item" @click="runFromMenu(() => api.openSettings())">Settings…</button></li>
+      <li class="context-colors">
+        <button
+          v-for="c in COLORS"
+          :key="c"
+          :class="['swatch', `color-${c}`, { current: c === note.color }]"
+          :title="c[0].toUpperCase() + c.slice(1)"
+          @click="runFromMenu(() => save({ color: c }))"
+        />
+      </li>
+      <li><button class="popover-item danger" @click="runFromMenu(() => api.deleteNote(props.id))">Delete note</button></li>
+    </ul>
 
     <ul v-if="trigger && menuItems.length" ref="menuEl" class="menu" role="listbox">
       <li

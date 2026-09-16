@@ -13,6 +13,7 @@ import {
   wrapInOrderedListCommand,
 } from "@milkdown/kit/preset/commonmark";
 import { toggleStrikethroughCommand } from "@milkdown/kit/preset/gfm";
+import { Selection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { callCommand, replaceAll } from "@milkdown/kit/utils";
 import type { FormatAction } from "./commands";
@@ -60,6 +61,23 @@ defineExpose({
   },
   focus() {
     withView((view) => view.focus());
+  },
+
+  /** Append plain text at the end — used to show an AI reply as it streams in. */
+  appendText(text: string) {
+    withView((view) => {
+      const end = Selection.atEnd(view.state.doc).to;
+      view.dispatch(view.state.tr.insertText(text, end).scrollIntoView());
+    });
+  },
+
+  /** Focus with the caret at the end, ready to keep typing. */
+  focusEnd() {
+    withView((view) => {
+      const end = Selection.atEnd(view.state.doc);
+      view.dispatch(view.state.tr.setSelection(end).scrollIntoView());
+      view.focus();
+    });
   },
   /** Swap the typed `/cmd` or `@name` token for the chosen completion. */
   completeTrigger(trigger: Trigger, text: string) {

@@ -7,7 +7,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::config::Config;
@@ -37,6 +37,10 @@ pub struct ContextNote {
     pub title: String,
     pub body: String,
 }
+
+/// Called with each chunk of text as the model produces it, when the provider
+/// can stream. Providers that can't just return the whole answer at the end.
+pub type DeltaSink<'a> = Option<&'a (dyn Fn(&str) + Send + Sync)>;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AiResponse {
@@ -73,13 +77,13 @@ pub async fn status(config: &Config) -> ProviderStatus {
     }
 }
 
-pub async fn run(req: AiRequest, config: &Config) -> Result<AiResponse, String> {
+pub async fn run(req: AiRequest, config: &Config, on_delta: DeltaSink<'_>) -> Result<AiResponse, String> {
     let wanted = req.provider.clone().filter(|p| p != "auto").unwrap_or_else(|| config.provider.clone());
     let provider = if wanted == "auto" { pick_provider(config).await? } else { wanted };
     let prompt = build_prompt(&req);
     let text = match provider.as_str() {
-        "claude-cli" => run_claude_cli(&prompt, config).await?,
-        "codex-cli" => run_codex_cli(&prompt, config).await?,
+        "claude-cli" => run_claude_cli(&prompt, config, on_delta).await?,
+        "codex-cli" => run_codex_cli(&prompt, config, on_delta).await?,
         "anthropic-api" => run_anthropic_api(&prompt, config).await?,
         "openai-api" => run_openai_api(&prompt, config).await?,
         other => return Err(format!("unknown AI provider '{other}'")),
@@ -200,6 +204,45 @@ pub(crate) async fn exec(mut cmd: Command, stdin: Option<&str>, timeout: Duratio
     })
 }
 
+/// Runs a command, handing each line of stdout to `on_line` as it arrives.
+pub(crate) async fn exec_lines(
+    mut cmd: Command,
+    stdin: Option<&str>,
+    timeout: Duration,
+    mut on_line: impl FnMut(&str),
+) -> Result<Output, String> {
+    if stdin.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("failed to start: {e}"))?;
+    if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        pipe.write_all(input.as_bytes()).await.map_err(|e| e.to_string())?;
+        drop(pipe);
+    }
+    let stdout = child.stdout.take().ok_or("no output stream")?;
+    let mut stderr = child.stderr.take();
+    let mut lines = BufReader::new(stdout).lines();
+    let mut collected = String::new();
+
+    let read = async {
+        while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+            on_line(&line);
+            collected.push_str(&line);
+            collected.push('\n');
+        }
+        child.wait().await.map_err(|e| e.to_string())
+    };
+    let status = tokio::time::timeout(timeout, read)
+        .await
+        .map_err(|_| format!("timed out after {}s", timeout.as_secs()))??;
+
+    let mut errors = String::new();
+    if let Some(mut pipe) = stderr.take() {
+        let _ = pipe.read_to_string(&mut errors).await;
+    }
+    Ok(Output { ok: status.success(), stdout: collected, stderr: errors })
+}
+
 async fn version(cli: &Path) -> Option<String> {
     let mut cmd = command(cli);
     cmd.arg("--version");
@@ -267,35 +310,55 @@ fn first_line(a: &str, b: &str) -> String {
     text.trim().lines().next().unwrap_or("unknown error").to_string()
 }
 
-async fn run_claude_cli(prompt: &str, config: &Config) -> Result<String, String> {
+async fn run_claude_cli(prompt: &str, config: &Config, on_delta: DeltaSink<'_>) -> Result<String, String> {
     let cli = find_cli("claude", &config.claude_path).ok_or("Claude Code (`claude`) is not installed")?;
     let mut cmd = command(&cli);
     // No tools, no MCP servers, no saved session: a plain text completion that
     // runs on the user's own Claude Code login.
-    cmd.args([
-        "-p",
-        "--output-format",
-        "json",
-        "--tools",
-        "",
-        "--strict-mcp-config",
-        "--no-session-persistence",
-        "--system-prompt",
-        SYSTEM_PROMPT,
-    ]);
+    cmd.args(["-p", "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", SYSTEM_PROMPT]);
+    cmd.args(if on_delta.is_some() {
+        ["--output-format", "stream-json", "--include-partial-messages", "--verbose"].as_slice()
+    } else {
+        ["--output-format", "json"].as_slice()
+    });
     if !config.claude_model.is_empty() {
         cmd.args(["--model", &config.claude_model]);
     }
-    let out = exec(cmd, Some(prompt), TIMEOUT).await.map_err(|e| format!("claude: {e}"))?;
-    let parsed: serde_json::Value = serde_json::from_str(out.stdout.trim())
-        .map_err(|_| format!("claude: {}", first_line(&out.stderr, &out.stdout)))?;
-    if parsed["is_error"].as_bool().unwrap_or(!out.ok) {
-        return Err(format!("claude: {}", parsed["result"].as_str().unwrap_or("request failed")));
+
+    let mut result: Option<String> = None;
+    let mut failed: Option<String> = None;
+    let out = exec_lines(cmd, Some(prompt), TIMEOUT, |line| {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line.trim()) else { return };
+        match event["type"].as_str() {
+            Some("stream_event") if event["event"]["type"] == "content_block_delta" => {
+                if let (Some(sink), Some(text)) = (on_delta, event["event"]["delta"]["text"].as_str()) {
+                    sink(text);
+                }
+            }
+            Some("result") => {
+                let text = event["result"].as_str().unwrap_or_default().to_string();
+                if event["is_error"].as_bool().unwrap_or(false) {
+                    failed = Some(text);
+                } else {
+                    result = Some(text);
+                }
+            }
+            _ => {}
+        }
+    })
+    .await
+    .map_err(|e| format!("claude: {e}"))?;
+
+    if let Some(message) = failed {
+        return Err(format!("claude: {message}"));
     }
-    parsed["result"].as_str().map(String::from).ok_or_else(|| "claude: empty response".into())
+    match result {
+        Some(text) if !text.is_empty() => Ok(text),
+        _ => Err(format!("claude: {}", first_line(&out.stderr, &out.stdout))),
+    }
 }
 
-async fn run_codex_cli(prompt: &str, config: &Config) -> Result<String, String> {
+async fn run_codex_cli(prompt: &str, config: &Config, on_delta: DeltaSink<'_>) -> Result<String, String> {
     let cli = find_cli("codex", &config.codex_path).ok_or("Codex (`codex`) is not installed")?;
     let out_file = std::env::temp_dir().join(format!("stickies-codex-{}.txt", ulid::Ulid::new()));
     let mut cmd = command(&cli);
@@ -304,9 +367,28 @@ async fn run_codex_cli(prompt: &str, config: &Config) -> Result<String, String> 
     if !config.codex_model.is_empty() {
         cmd.args(["-m", &config.codex_model]);
     }
+    if on_delta.is_some() {
+        cmd.arg("--json");
+    }
     cmd.arg("-");
     let full_prompt = format!("{SYSTEM_PROMPT}\n\n{prompt}");
-    let out = exec(cmd, Some(&full_prompt), TIMEOUT).await.map_err(|e| format!("codex: {e}"));
+    // Codex's event payloads vary by version, so send only text we recognise,
+    // and only the part we haven't sent yet.
+    let mut sent = 0usize;
+    let out = exec_lines(cmd, Some(&full_prompt), TIMEOUT, |line| {
+        let (Some(sink), Ok(event)) = (on_delta, serde_json::from_str::<serde_json::Value>(line.trim())) else { return };
+        let item = &event["item"];
+        if item["type"].as_str().is_some_and(|t| t.contains("message")) || event["type"] == "item.updated" {
+            if let Some(text) = item["text"].as_str().or_else(|| item["content"].as_str()) {
+                if text.len() > sent {
+                    sink(&text[sent..]);
+                    sent = text.len();
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("codex: {e}"));
     let text = std::fs::read_to_string(&out_file).ok();
     let _ = std::fs::remove_file(&out_file);
     let out = out?;

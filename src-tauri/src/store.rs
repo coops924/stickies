@@ -108,20 +108,26 @@ impl Store {
 
     /// All notes, most recently updated first.
     pub fn list(&self) -> Result<Vec<Note>> {
-        let mut notes = Vec::new();
-        for entry in fs::read_dir(self.notes_dir())? {
-            let path = entry?.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            // A half-written or hand-edited file shouldn't hide every other note.
-            if let Ok(text) = fs::read_to_string(&path) {
-                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-                notes.push(parse(stem, &text));
-            }
+        read_notes(&self.notes_dir())
+    }
+
+    /// Deleted notes, most recently updated first.
+    pub fn list_trash(&self) -> Result<Vec<Note>> {
+        read_notes(&self.trash_dir())
+    }
+
+    /// Moves a note back out of the trash.
+    pub fn restore(&self, id: &str) -> Result<Note> {
+        let id = id.trim();
+        if !is_safe_id(id) {
+            return Err(StoreError::Invalid(format!("invalid note id '{id}'")));
         }
-        notes.sort_by(|a, b| b.updated.cmp(&a.updated));
-        Ok(notes)
+        let from = self.trash_dir().join(format!("{id}.md"));
+        if !from.exists() {
+            return Err(StoreError::NotFound(id.into()));
+        }
+        fs::rename(from, self.path_for(id))?;
+        self.resolve(id)
     }
 
     /// Look a note up by full id, unique id prefix, or exact (case-insensitive) title.
@@ -239,6 +245,24 @@ impl Store {
     }
 }
 
+/// Every `.md` file in a folder, newest first. A half-written or hand-edited
+/// file is skipped rather than hiding every other note.
+fn read_notes(dir: &Path) -> Result<Vec<Note>> {
+    let mut notes = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        if let Ok(text) = fs::read_to_string(&path) {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+            notes.push(parse(stem, &text));
+        }
+    }
+    notes.sort_by(|a, b| b.updated.cmp(&a.updated));
+    Ok(notes)
+}
+
 fn now() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -348,6 +372,19 @@ mod tests {
         s.delete(&n.id).unwrap();
         assert!(matches!(s.resolve(&n.id), Err(StoreError::NotFound(_))));
         assert_eq!(s.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deleted_notes_can_be_listed_and_restored() {
+        let s = temp_store();
+        let n = s.create("Draft", None, vec![]).unwrap();
+        s.delete(&n.id).unwrap();
+        assert_eq!(s.list_trash().unwrap().len(), 1);
+        assert_eq!(s.restore(&n.id).unwrap().title, "Draft");
+        assert!(s.list_trash().unwrap().is_empty());
+        assert_eq!(s.list().unwrap().len(), 1);
+        assert!(s.restore("../../etc/passwd").is_err());
+        assert!(matches!(s.restore(&n.id), Err(StoreError::NotFound(_))));
     }
 
     #[test]
